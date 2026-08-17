@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Runtime artefacts
+*.mp4
+*.mkv
+*.webm
+
+# Logs & temp
+*.log
+.temp/
+.tmp/
+
+# OS metadata
+.DS_Store
+
+# Environment variables
+.env
+.env.local
