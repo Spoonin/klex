@@ -37,6 +37,10 @@ async function exportFile({ file, preset }: ExportRequest) {
   if (!decoderConfig) throw new Error('Не удалось получить конфигурацию видеодекодера.');
 
   const audioTrack = await input.getPrimaryAudioTrack();
+  // MP4 edit lists and B-frames may make the first presentation timestamp
+  // negative. All output tracks share this origin so A/V stays in sync.
+  const timelineStart = await input.getFirstTimestamp(audioTrack ? [videoTrack, audioTrack] : [videoTrack]);
+  const timelineStartMicroseconds = Math.round(timelineStart * 1_000_000);
   const { width, height } = outputSize(videoTrack.displayWidth, videoTrack.displayHeight, preset);
   const encoderConfig = await supportedEncoderConfig(width, height, preset);
   const canvas = new OffscreenCanvas(width, height);
@@ -67,9 +71,14 @@ async function exportFile({ file, preset }: ExportRequest) {
   encoder.configure(encoderConfig);
 
   let rendered = Promise.resolve();
+  let firstRenderedFrame = true;
   const decoder = new VideoDecoder({
     output(frame) {
-      rendered = rendered.then(() => renderAndEncode(frame, renderer, canvas, encoder));
+      rendered = rendered.then(() => {
+        const keyFrame = firstRenderedFrame;
+        firstRenderedFrame = false;
+        return renderAndEncode(frame, renderer, canvas, encoder, timelineStartMicroseconds, keyFrame);
+      });
     },
     error(error) { throw error; },
   });
@@ -93,7 +102,9 @@ async function exportFile({ file, preset }: ExportRequest) {
 
   if (audioTrack && audioSource) {
     const audioPackets = new EncodedPacketSink(audioTrack);
-    for await (const packet of audioPackets.packets()) await audioSource.add(packet);
+    for await (const packet of audioPackets.packets()) {
+      await audioSource.add(packet.clone({ timestamp: nonNegativeTimestamp(packet.timestamp - timelineStart) }));
+    }
     audioSource.close();
   }
   await output.finalize();
@@ -118,16 +129,22 @@ function outputSize(sourceWidth: number, sourceHeight: number, preset: ExportPre
   return { width: even(sourceWidth), height: even(sourceHeight) };
 }
 
-async function renderAndEncode(frame: VideoFrame, renderer: Renderer, canvas: OffscreenCanvas, encoder: VideoEncoder) {
+async function renderAndEncode(frame: VideoFrame, renderer: Renderer, canvas: OffscreenCanvas, encoder: VideoEncoder, timelineStartMicroseconds: number, keyFrame: boolean) {
   try {
     renderer.draw(frame);
-    const encodedFrame = new VideoFrame(canvas, { timestamp: frame.timestamp, duration: frame.duration ?? undefined });
-    encoder.encode(encodedFrame, { keyFrame: frame.timestamp === 0 });
+    const timestamp = Math.max(0, frame.timestamp - timelineStartMicroseconds);
+    const encodedFrame = new VideoFrame(canvas, { timestamp, duration: frame.duration ?? undefined });
+    encoder.encode(encodedFrame, { keyFrame });
     encodedFrame.close();
     while (encoder.encodeQueueSize >= MAX_IN_FLIGHT_FRAMES) await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
     frame.close();
   }
+}
+
+function nonNegativeTimestamp(timestamp: number) {
+  // Tiny negative values can remain after floating point timebase conversion.
+  return Math.max(0, timestamp);
 }
 
 type Renderer = { draw(frame: VideoFrame): void };
