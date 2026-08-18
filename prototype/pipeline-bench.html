@@ -656,7 +656,7 @@
       let outHeight = 1920;
       let totalFrames = durationSec * 30;
       let frameGenerator = null;
-      let demuxer = null;
+      let sampleSink = null;
 
       if (sourceType === 'synthetic-4k') {
         inWidth = 2160;
@@ -681,17 +681,20 @@
         }
         log(`Чтение файла через Mediabunny: ${selectedFile.name}...`);
         const fileSource = new Mediabunny.BlobSource(selectedFile);
-        const inputFile = new Mediabunny.InputFile(fileSource);
-        const videoTrack = await inputFile.getPrimaryVideoTrack();
+        const input = new Mediabunny.Input({ source: fileSource });
+        const videoTrack = await input.getPrimaryVideoTrack();
         if (!videoTrack) throw new Error('В файле не найдена видеодорожка');
-        
-        inWidth = videoTrack.width || 1080;
-        inHeight = videoTrack.height || 1920;
+
+        sampleSink = new Mediabunny.VideoSampleSink(videoTrack);
+        inWidth = videoTrack.displayWidth || videoTrack.codedWidth || 1080;
+        inHeight = videoTrack.displayHeight || videoTrack.codedHeight || 1920;
         outWidth = inWidth > 1080 ? 1080 : inWidth;
         outHeight = Math.round((outWidth * inHeight) / inWidth);
         if (outHeight % 2 !== 0) outHeight--; // Even dimensions for H.264
         
-        log(`Видеодорожка: ${inWidth}×${inHeight} -> Выход: ${outWidth}×${outHeight}, длительность ~${videoTrack.duration?.toFixed(1) || '?'}с`);
+        const trackDuration = await input.computeDuration();
+        totalFrames = Math.max(1, Math.round(trackDuration * 30));
+        log(`Видеодорожка: ${inWidth}×${inHeight} -> Выход: ${outWidth}×${outHeight}, длительность ~${trackDuration.toFixed(1)}с (${totalFrames} кадров)`);
       }
 
       // Pre-render Layer Bitmaps
@@ -752,6 +755,77 @@
       let processedFrames = 0;
       let totalRenderTime = 0;
 
+      async function processAndEncodeFrame(srcFrame, f) {
+        const t0 = performance.now();
+
+        // WebGL2 Compositing
+        gl.useProgram(program);
+        gl.bindVertexArray(vao);
+
+        // 1. Background Video Frame
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, videoTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcFrame);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        // 2. Blend Text Layers
+        if (layerTextures.length > 0) {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+          for (const lTex of layerTextures) {
+            gl.bindTexture(gl.TEXTURE_2D, lTex);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+          }
+          gl.disable(gl.BLEND);
+        }
+
+        // Create output frame for encoder
+        const compFrame = new VideoFrame(glCanvas, {
+          timestamp: srcFrame.timestamp,
+          duration: srcFrame.duration
+        });
+        activeVideoFrames++;
+
+        // Close source frame immediately!
+        srcFrame.close();
+        activeVideoFrames--;
+
+        // Feed encoder & close composited frame
+        encoder.encode(compFrame, { keyFrame: f % 30 === 0 });
+        compFrame.close();
+        activeVideoFrames--;
+
+        const t1 = performance.now();
+        totalRenderTime += (t1 - t0);
+        processedFrames++;
+
+        // Update telemetry every 10 frames
+        if (f % 10 === 0 || f === totalFrames - 1) {
+          const elapsed = (performance.now() - startTime) / 1000;
+          const curFps = (processedFrames / elapsed).toFixed(1);
+          const speedMultiplier = ((processedFrames / 30) / elapsed).toFixed(2);
+          const pct = Math.min(100, Math.round((processedFrames / totalFrames) * 100));
+
+          progressBar.style.width = `${pct}%`;
+          progressPercent.textContent = `${pct}%`;
+          progressText.textContent = `Обработка кадра ${processedFrames} из ${totalFrames}...`;
+
+          valFrames.textContent = `${processedFrames} / ${totalFrames}`;
+          valSpeed.textContent = `${speedMultiplier}x`;
+          valFps.textContent = `${curFps}`;
+          valFrameTime.textContent = `${(totalRenderTime / processedFrames).toFixed(1)} ms`;
+          valOpenFrames.textContent = `${activeVideoFrames}`;
+
+          if (performance.memory) {
+            const curHeap = performance.memory.usedJSHeapSize;
+            if (curHeap > peakHeap) peakHeap = curHeap;
+            valHeap.textContent = `${(curHeap / 1024 / 1024).toFixed(1)} MB (Δ ${( (curHeap - initialHeap) / 1024 / 1024).toFixed(1)} MB)`;
+          } else {
+            valHeap.textContent = 'Safari (N/A)';
+          }
+        }
+      }
+
       try {
         if (frameGenerator) {
           for (let f = 0; f < totalFrames; f++) {
@@ -762,77 +836,28 @@
               await new Promise(r => { dequeueResolve = r; });
             }
 
-            const t0 = performance.now();
             const srcFrame = frameGenerator.nextFrame();
             if (!srcFrame) break;
             activeVideoFrames++;
 
-            // WebGL2 Compositing
-            gl.useProgram(program);
-            gl.bindVertexArray(vao);
+            await processAndEncodeFrame(srcFrame, f);
+          }
+        } else if (sampleSink) {
+          let f = 0;
+          for await (const sample of sampleSink.samples()) {
+            if (signal.aborted) break;
 
-            // 1. Background Video Frame
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, videoTex);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcFrame);
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-            // 2. Blend Text Layers
-            if (layerTextures.length > 0) {
-              gl.enable(gl.BLEND);
-              gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-              for (const lTex of layerTextures) {
-                gl.bindTexture(gl.TEXTURE_2D, lTex);
-                gl.drawArrays(gl.TRIANGLES, 0, 6);
-              }
-              gl.disable(gl.BLEND);
+            // Backpressure check
+            if (encoder.encodeQueueSize >= queueLimit) {
+              await new Promise(r => { dequeueResolve = r; });
             }
 
-            // Create output frame for encoder
-            const compFrame = new VideoFrame(glCanvas, {
-              timestamp: srcFrame.timestamp,
-              duration: srcFrame.duration
-            });
+            const srcFrame = sample.toVideoFrame();
             activeVideoFrames++;
 
-            // Close source frame immediately!
-            srcFrame.close();
-            activeVideoFrames--;
-
-            // Feed encoder & close composited frame
-            encoder.encode(compFrame, { keyFrame: f % 30 === 0 });
-            compFrame.close();
-            activeVideoFrames--;
-
-            const t1 = performance.now();
-            totalRenderTime += (t1 - t0);
-            processedFrames++;
-
-            // Update telemetry every 10 frames
-            if (f % 10 === 0 || f === totalFrames - 1) {
-              const elapsed = (performance.now() - startTime) / 1000;
-              const curFps = (processedFrames / elapsed).toFixed(1);
-              const speedMultiplier = ((processedFrames / 30) / elapsed).toFixed(2);
-              const pct = Math.round((processedFrames / totalFrames) * 100);
-
-              progressBar.style.width = `${pct}%`;
-              progressPercent.textContent = `${pct}%`;
-              progressText.textContent = `Обработка кадра ${processedFrames} из ${totalFrames}...`;
-
-              valFrames.textContent = `${processedFrames} / ${totalFrames}`;
-              valSpeed.textContent = `${speedMultiplier}x`;
-              valFps.textContent = `${curFps}`;
-              valFrameTime.textContent = `${(totalRenderTime / processedFrames).toFixed(1)} ms`;
-              valOpenFrames.textContent = `${activeVideoFrames}`;
-
-              if (performance.memory) {
-                const curHeap = performance.memory.usedJSHeapSize;
-                if (curHeap > peakHeap) peakHeap = curHeap;
-                valHeap.textContent = `${(curHeap / 1024 / 1024).toFixed(1)} MB (Δ ${( (curHeap - initialHeap) / 1024 / 1024).toFixed(1)} MB)`;
-              } else {
-                valHeap.textContent = 'Safari (N/A)';
-              }
-            }
+            await processAndEncodeFrame(srcFrame, f);
+            sample.close();
+            f++;
           }
         }
 
