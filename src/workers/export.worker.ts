@@ -13,6 +13,8 @@ import {
   type StreamTargetChunk,
 } from 'mediabunny';
 import type { ExportPreset, ExportRequest, WorkerMessage } from '../lib/export-protocol';
+import { DEFAULT_LAYER, layerOpacity, type LayerStyle } from '../lib/layer';
+import { rasterizeLayer } from '../lib/rasterizer';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -44,7 +46,7 @@ async function exportFile({ file, preset }: ExportRequest) {
   const { width, height } = outputSize(videoTrack.displayWidth, videoTrack.displayHeight, preset);
   const encoderConfig = await supportedEncoderConfig(width, height, preset);
   const canvas = new OffscreenCanvas(width, height);
-  const renderer = createRenderer(canvas);
+  const renderer = createRenderer(canvas, DEFAULT_LAYER);
   const writer = new SeekableBufferWriter();
   const output = new Output({ format: new Mp4OutputFormat(), target: new StreamTarget(writer.stream) });
   const videoSource = new EncodedVideoPacketSource('avc');
@@ -149,14 +151,14 @@ function nonNegativeTimestamp(timestamp: number) {
 
 type Renderer = { draw(frame: VideoFrame): void };
 
-function createRenderer(canvas: OffscreenCanvas): Renderer {
+function createRenderer(canvas: OffscreenCanvas, layer: LayerStyle): Renderer {
   const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true, alpha: false });
   if (!gl) throw new Error('WebGL2 недоступен.');
   const program = programFor(gl, `#version 300 es
     in vec2 position; in vec2 uv; out vec2 vUv;
     void main() { gl_Position = vec4(position, 0., 1.); vUv = vec2(uv.x, 1. - uv.y); }`, `#version 300 es
-    precision mediump float; uniform sampler2D videoFrame; uniform sampler2D label; in vec2 vUv; out vec4 color;
-    void main() { vec4 video = texture(videoFrame, vUv); vec4 text = texture(label, (vUv - vec2(.06, .78)) / vec2(.42, .14)); color = mix(video, text, text.a); }`);
+    precision mediump float; uniform sampler2D videoFrame; uniform sampler2D label; uniform vec2 labelOrigin; uniform vec2 labelSize; uniform float labelOpacity; in vec2 vUv; out vec4 color;
+    void main() { vec4 video = texture(videoFrame, vUv); vec2 labelUv = (vUv - labelOrigin) / labelSize; if (any(lessThan(labelUv, vec2(0.))) || any(greaterThan(labelUv, vec2(1.)))) { color = video; return; } vec4 text = texture(label, labelUv); text.a *= labelOpacity; color = mix(video, text, text.a); }`);
   const vao = gl.createVertexArray()!;
   gl.bindVertexArray(vao);
   const buffer = gl.createBuffer()!;
@@ -167,12 +169,14 @@ function createRenderer(canvas: OffscreenCanvas): Renderer {
   }
   const video = texture(gl, gl.TEXTURE0);
   const label = texture(gl, gl.TEXTURE1);
-  const labelCanvas = new OffscreenCanvas(800, 180);
-  const context = labelCanvas.getContext('2d')!;
-  context.font = 'bold 84px sans-serif'; context.fillStyle = 'white'; context.fillText('klex', 20, 112);
-  gl.bindTexture(gl.TEXTURE_2D, label); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, labelCanvas);
+  const labelBitmap = rasterizeLayer(layer, canvas.height);
+  const labelSize = [labelBitmap.width / canvas.width, labelBitmap.height / canvas.height] as const;
+  const labelOrigin = [layer.x - labelSize[0] / 2, layer.y - labelSize[1] / 2] as const;
+  gl.bindTexture(gl.TEXTURE_2D, label); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, labelBitmap); labelBitmap.close();
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.useProgram(program); gl.uniform1i(gl.getUniformLocation(program, 'videoFrame'), 0); gl.uniform1i(gl.getUniformLocation(program, 'label'), 1);
-  return { draw(frame) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, video); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); } };
+  gl.uniform2f(gl.getUniformLocation(program, 'labelOrigin'), ...labelOrigin); gl.uniform2f(gl.getUniformLocation(program, 'labelSize'), ...labelSize);
+  return { draw(frame) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, video); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame); gl.uniform1f(gl.getUniformLocation(program, 'labelOpacity'), layerOpacity(layer, frame.timestamp / 1_000_000)); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); } };
 }
 
 function texture(gl: WebGL2RenderingContext, unit: number) { const value = gl.createTexture()!; gl.activeTexture(unit); gl.bindTexture(gl.TEXTURE_2D, value); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return value; }
