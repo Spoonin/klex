@@ -143,7 +143,7 @@
     }
     th { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
     
-    canvas { display: none; }
+    canvas { visibility: hidden; position: fixed; left: -9999px; top: -9999px; pointer-events: none; }
     .badge {
       display: inline-block;
       padding: 2px 6px;
@@ -159,7 +159,7 @@
 <body>
 
   <header>
-    <h1>klex — Измерительный конвейер <span style="font-size: 12px; color: var(--success); font-weight: normal;">(v1.0.3)</span></h1>
+    <h1>klex — Измерительный конвейер <span style="font-size: 12px; color: var(--success); font-weight: normal;">(v1.0.4)</span></h1>
     <p class="subtitle">Прототип бенчмарка для тикета #7: WebCodecs + WebGL2 + Замеры памяти и скорости</p>
   </header>
 
@@ -439,7 +439,7 @@
     function setupWebGL(glCanvas, width, height) {
       glCanvas.width = width;
       glCanvas.height = height;
-      const gl = glCanvas.getContext('webgl2', { alpha: false, desynchronized: true, antialias: false });
+      const gl = glCanvas.getContext('webgl2', { alpha: false, preserveDrawingBuffer: true, desynchronized: false, antialias: false });
       if (!gl) throw new Error('WebGL2 context not supported');
 
       // Vertex Shader for Fullscreen Quad
@@ -708,8 +708,13 @@
         layerBitmaps.push(bmp);
       }
 
-      // Setup WebGL2
-      const glCanvas = document.getElementById('gl-canvas');
+      // Setup WebGL2 (prefer OffscreenCanvas)
+      let glCanvas;
+      if (typeof OffscreenCanvas !== 'undefined') {
+        glCanvas = new OffscreenCanvas(outWidth, outHeight);
+      } else {
+        glCanvas = document.getElementById('gl-canvas');
+      }
       const { gl, program, vao, videoTex } = setupWebGL(glCanvas, outWidth, outHeight);
 
       // Setup Layer Textures
