@@ -27,7 +27,7 @@ self.onmessage = ({ data }: MessageEvent<ExportRequest>) => {
   });
 };
 
-async function exportFile({ file, preset }: ExportRequest) {
+async function exportFile({ file, preset, layers }: ExportRequest) {
   if (!('OffscreenCanvas' in self) || !('VideoDecoder' in self) || !('VideoEncoder' in self)) {
     throw new Error('Этот браузер не поддерживает WebCodecs или OffscreenCanvas.');
   }
@@ -46,7 +46,7 @@ async function exportFile({ file, preset }: ExportRequest) {
   const { width, height } = outputSize(videoTrack.displayWidth, videoTrack.displayHeight, preset);
   const encoderConfig = await supportedEncoderConfig(width, height, preset);
   const canvas = new OffscreenCanvas(width, height);
-  const renderer = createRenderer(canvas, DEFAULT_LAYER);
+  const renderer = createRenderer(canvas, layers[0] ?? DEFAULT_LAYER);
   const writer = new SeekableBufferWriter();
   const output = new Output({ format: new Mp4OutputFormat(), target: new StreamTarget(writer.stream) });
   const videoSource = new EncodedVideoPacketSource('avc');

@@ -19,6 +19,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "@ariefsn/svelte-video-editor": "^1.1.0",
     "mediabunny": "^1.30.0"
   }
 }

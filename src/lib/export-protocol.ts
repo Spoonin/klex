@@ -4,6 +4,7 @@ export type ExportRequest = {
   type: 'export';
   file: File;
   preset: ExportPreset;
+  layers: import('./layer').LayerStyle[];
 };
 
 export type WorkerMessage =
