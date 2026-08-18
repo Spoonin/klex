@@ -154,7 +154,7 @@ function createRenderer(canvas: OffscreenCanvas): Renderer {
   if (!gl) throw new Error('WebGL2 недоступен.');
   const program = programFor(gl, `#version 300 es
     in vec2 position; in vec2 uv; out vec2 vUv;
-    void main() { gl_Position = vec4(position, 0., 1.); vUv = uv; }`, `#version 300 es
+    void main() { gl_Position = vec4(position, 0., 1.); vUv = vec2(uv.x, 1. - uv.y); }`, `#version 300 es
     precision mediump float; uniform sampler2D videoFrame; uniform sampler2D label; in vec2 vUv; out vec4 color;
     void main() { vec4 video = texture(videoFrame, vUv); vec4 text = texture(label, (vUv - vec2(.06, .78)) / vec2(.42, .14)); color = mix(video, text, text.a); }`);
   const vao = gl.createVertexArray()!;
