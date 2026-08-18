@@ -681,7 +681,7 @@
         }
         log(`Чтение файла через Mediabunny: ${selectedFile.name}...`);
         const fileSource = new Mediabunny.BlobSource(selectedFile);
-        const input = new Mediabunny.Input({ source: fileSource });
+        const input = new Mediabunny.Input({ source: fileSource, formats: Mediabunny.ALL_FORMATS });
         const videoTrack = await input.getPrimaryVideoTrack();
         if (!videoTrack) throw new Error('В файле не найдена видеодорожка');
 
