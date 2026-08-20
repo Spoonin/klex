@@ -9,9 +9,10 @@ describe('export worker protocol', () => {
   });
 
   it('keeps export and completion messages transferable', () => {
-    const request: Pick<ExportRequest, 'type' | 'preset'> = {
+    const request: Pick<ExportRequest, 'type' | 'preset' | 'trim'> = {
       type: 'export',
       preset: 'standard',
+      trim: { trimIn: 0, trimOut: 8 },
     };
     const completed: WorkerMessage = {
       type: 'complete',

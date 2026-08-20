@@ -12,22 +12,48 @@ import {
   StreamTarget,
   type StreamTargetChunk,
 } from 'mediabunny';
-import type { ExportPreset, ExportRequest, WorkerMessage } from '../lib/export-protocol';
+import type { ExportPreset, ExportRequest, ValidateRequest, WorkerMessage } from '../lib/export-protocol';
 import { DEFAULT_LAYER, layerOpacity, type LayerStyle } from '../lib/layer';
 import { rasterizeLayer } from '../lib/rasterizer';
+import { isInTrimWindow } from '../lib/trim';
 
 declare const self: DedicatedWorkerGlobalScope;
 
 const MAX_IN_FLIGHT_FRAMES = 2;
 const codecs = ['avc1.640028', 'avc1.4d0028', 'avc1.42e028', 'avc1.42001f'];
 
-self.onmessage = ({ data }: MessageEvent<ExportRequest>) => {
-  if (data.type === 'export') void exportFile(data).catch((cause: unknown) => {
+self.onmessage = ({ data }: MessageEvent<ExportRequest | ValidateRequest>) => {
+  const task = data.type === 'validate' ? validateFile(data) : exportFile(data);
+  void task.catch((cause: unknown) => {
     post({ type: 'error', message: cause instanceof Error ? cause.message : 'Экспорт не выполнен.' });
   });
 };
 
-async function exportFile({ file, preset, layers }: ExportRequest) {
+async function validateFile({ file }: ValidateRequest) {
+  if (!('VideoDecoder' in self)) throw new Error('Этот браузер не поддерживает WebCodecs.');
+  if (!isSupportedContainer(file)) throw new Error('Поддерживаются только контейнеры MP4 и MOV.');
+  const input = new Input({ formats: [MP4], source: new BlobSource(file) });
+  try {
+    const videoTrack = await input.getPrimaryVideoTrack();
+    if (!videoTrack) throw new Error('В выбранном файле нет видеодорожки.');
+    const [decoderConfig, width, height, duration, audioTrack] = await Promise.all([
+      videoTrack.getDecoderConfig(),
+      videoTrack.getDisplayWidth(),
+      videoTrack.getDisplayHeight(),
+      input.getDurationFromMetadata([videoTrack]),
+      input.getPrimaryAudioTrack(),
+    ]);
+    if (!decoderConfig || !(await VideoDecoder.isConfigSupported(decoderConfig)).supported) throw new Error('Видеокодек этого файла не поддерживается браузером.');
+    if (width > 3840 || height > 3840) throw new Error('Разрешение видео превышает предел 4K (3840 px по большей стороне).');
+    if (!duration || duration <= 0) throw new Error('Не удалось определить длительность видео.');
+    const supportedAudio = audioTrack ? await isAacLc(audioTrack) : true;
+    post({ type: 'validated', metadata: { duration, width, height, audioWarning: !supportedAudio ? 'Аудиокодек не AAC-LC: экспорт будет выполнен без звука.' : null } });
+  } finally {
+    input.dispose();
+  }
+}
+
+async function exportFile({ file, preset, layers, trim }: ExportRequest) {
   if (!('OffscreenCanvas' in self) || !('VideoDecoder' in self) || !('VideoEncoder' in self)) {
     throw new Error('Этот браузер не поддерживает WebCodecs или OffscreenCanvas.');
   }
@@ -43,7 +69,8 @@ async function exportFile({ file, preset, layers }: ExportRequest) {
   // negative. All output tracks share this origin so A/V stays in sync.
   const timelineStart = await input.getFirstTimestamp(audioTrack ? [videoTrack, audioTrack] : [videoTrack]);
   const timelineStartMicroseconds = Math.round(timelineStart * 1_000_000);
-  const { width, height } = outputSize(videoTrack.displayWidth, videoTrack.displayHeight, preset);
+  const [displayWidth, displayHeight] = await Promise.all([videoTrack.getDisplayWidth(), videoTrack.getDisplayHeight()]);
+  const { width, height } = outputSize(displayWidth, displayHeight, preset);
   const encoderConfig = await supportedEncoderConfig(width, height, preset);
   const canvas = new OffscreenCanvas(width, height);
   const renderer = createRenderer(canvas, layers[0] ?? DEFAULT_LAYER);
@@ -53,7 +80,7 @@ async function exportFile({ file, preset, layers }: ExportRequest) {
   output.addVideoTrack(videoSource);
 
   let audioSource: EncodedAudioPacketSource | undefined;
-  if (audioTrack?.codec === 'aac') {
+  if (audioTrack && await isAacLc(audioTrack)) {
     audioSource = new EncodedAudioPacketSource('aac');
     output.addAudioTrack(audioSource, { decoderConfig: await audioTrack.getDecoderConfig() ?? undefined });
   }
@@ -73,13 +100,11 @@ async function exportFile({ file, preset, layers }: ExportRequest) {
   encoder.configure(encoderConfig);
 
   let rendered = Promise.resolve();
-  let firstRenderedFrame = true;
+  const firstEncodedFrame = { value: true };
   const decoder = new VideoDecoder({
     output(frame) {
       rendered = rendered.then(() => {
-        const keyFrame = firstRenderedFrame;
-        firstRenderedFrame = false;
-        return renderAndEncode(frame, renderer, canvas, encoder, timelineStartMicroseconds, keyFrame);
+        return renderAndEncode(frame, renderer, canvas, encoder, timelineStartMicroseconds, trim.trimIn, trim.trimOut, firstEncodedFrame);
       });
     },
     error(error) { throw error; },
@@ -87,17 +112,21 @@ async function exportFile({ file, preset, layers }: ExportRequest) {
   decoder.configure(decoderConfig);
 
   const videoPackets = new EncodedPacketSink(videoTrack);
-  let processed = 0;
-  for await (const packet of videoPackets.packets()) {
+  const trimStartKeyPacket = await videoPackets.getKeyPacket(timelineStart + trim.trimIn, { verifyKeyPackets: true });
+  const trimDuration = trim.trimOut - trim.trimIn;
+  let progressSeconds = 0;
+  for await (const packet of videoPackets.packets(trimStartKeyPacket ?? undefined)) {
+    if (packet.timestamp >= timelineStart + trim.trimOut) break;
     decoder.decode(packet.toEncodedVideoChunk());
-    processed += 1;
     if (decoder.decodeQueueSize >= MAX_IN_FLIGHT_FRAMES) await rendered;
-    post({ type: 'progress', completed: processed, total: 0 });
+    progressSeconds = Math.max(progressSeconds, Math.min(trimDuration, packet.timestamp - timelineStart - trim.trimIn));
+    post({ type: 'progress', completed: progressSeconds, total: trimDuration });
   }
   await decoder.flush();
   await rendered;
   await encoder.flush();
   await packetWrites;
+  post({ type: 'progress', completed: trimDuration, total: trimDuration });
   decoder.close();
   encoder.close();
   videoSource.close();
@@ -105,7 +134,10 @@ async function exportFile({ file, preset, layers }: ExportRequest) {
   if (audioTrack && audioSource) {
     const audioPackets = new EncodedPacketSink(audioTrack);
     for await (const packet of audioPackets.packets()) {
-      await audioSource.add(packet.clone({ timestamp: nonNegativeTimestamp(packet.timestamp - timelineStart) }));
+      const relativeTimestamp = packet.timestamp - timelineStart;
+      if (relativeTimestamp >= trim.trimOut) break;
+      if (!isInTrimWindow(relativeTimestamp, trim)) continue;
+      await audioSource.add(packet.clone({ timestamp: nonNegativeTimestamp(relativeTimestamp - trim.trimIn) }));
     }
     audioSource.close();
   }
@@ -131,17 +163,30 @@ function outputSize(sourceWidth: number, sourceHeight: number, preset: ExportPre
   return { width: even(sourceWidth), height: even(sourceHeight) };
 }
 
-async function renderAndEncode(frame: VideoFrame, renderer: Renderer, canvas: OffscreenCanvas, encoder: VideoEncoder, timelineStartMicroseconds: number, keyFrame: boolean) {
+async function renderAndEncode(frame: VideoFrame, renderer: Renderer, canvas: OffscreenCanvas, encoder: VideoEncoder, timelineStartMicroseconds: number, trimIn: number, trimOut: number, firstEncodedFrame: { value: boolean }) {
   try {
+    const sourceTimestamp = frame.timestamp / 1_000_000 - timelineStartMicroseconds / 1_000_000;
+    if (sourceTimestamp < trimIn || sourceTimestamp >= trimOut) return;
     renderer.draw(frame);
-    const timestamp = Math.max(0, frame.timestamp - timelineStartMicroseconds);
+    const timestamp = Math.max(0, frame.timestamp - timelineStartMicroseconds - Math.round(trimIn * 1_000_000));
     const encodedFrame = new VideoFrame(canvas, { timestamp, duration: frame.duration ?? undefined });
-    encoder.encode(encodedFrame, { keyFrame });
+    encoder.encode(encodedFrame, { keyFrame: firstEncodedFrame.value });
+    firstEncodedFrame.value = false;
     encodedFrame.close();
     while (encoder.encodeQueueSize >= MAX_IN_FLIGHT_FRAMES) await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
     frame.close();
   }
+}
+
+function isSupportedContainer(file: File) {
+  return file.type === 'video/mp4' || file.type === 'video/quicktime' || /\.(mp4|mov)$/i.test(file.name);
+}
+
+async function isAacLc(audioTrack: Awaited<ReturnType<Input['getPrimaryAudioTrack']>> & {}) {
+  if (!audioTrack || await audioTrack.getCodec() !== 'aac') return false;
+  const config = await audioTrack.getDecoderConfig();
+  return config?.codec === 'mp4a.40.2';
 }
 
 function nonNegativeTimestamp(timestamp: number) {
