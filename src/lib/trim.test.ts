@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampTrimWindow, defaultTrimWindow, isInTrimWindow } from './trim';
+import { clampTrimWindow, defaultTrimWindow, isInTrimWindow, moveTrimBoundary } from './trim';
 
 describe('Trim Window', () => {
   it('defaults long videos to their first 120 seconds', () => {
@@ -15,5 +15,16 @@ describe('Trim Window', () => {
     const window = { trimIn: 10, trimOut: 20 };
     expect(isInTrimWindow(10, window)).toBe(true);
     expect(isInTrimWindow(20, window)).toBe(false);
+  });
+
+  it('pushes the opposite trim boundary and keeps a 0.5–120 second window', () => {
+    expect(moveTrimBoundary({ trimIn: 10, trimOut: 30 }, 'trimIn', 29.8, 180))
+      .toEqual({ trimIn: 29.8, trimOut: 30.3 });
+    expect(moveTrimBoundary({ trimIn: 10, trimOut: 30 }, 'trimOut', 9.8, 180))
+      .toEqual({ trimIn: 9.3, trimOut: 9.8 });
+    expect(moveTrimBoundary({ trimIn: 0, trimOut: 120 }, 'trimIn', 40, 180))
+      .toEqual({ trimIn: 40, trimOut: 120 });
+    expect(moveTrimBoundary({ trimIn: 40, trimOut: 120 }, 'trimOut', 180, 180))
+      .toEqual({ trimIn: 60, trimOut: 180 });
   });
 });

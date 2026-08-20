@@ -1,4 +1,5 @@
 export type ExportPreset = 'high' | 'standard' | 'light';
+export type WorkerErrorCode = 'webCodecs' | 'container' | 'noVideo' | 'videoCodec' | 'resolution' | 'duration' | 'capabilities' | 'decoder' | 'encoder' | 'generic';
 
 export type ExportRequest = {
   type: 'export';
@@ -14,12 +15,12 @@ export type SourceMetadata = {
   duration: number;
   width: number;
   height: number;
-  audioWarning: string | null;
+  unsupportedAudio: boolean;
 };
 
 export type WorkerMessage =
   | { type: 'validated'; metadata: SourceMetadata }
   | { type: 'progress'; completed: number; total: number }
   | { type: 'complete'; file: ArrayBuffer }
-  | { type: 'error'; message: string }
+  | { type: 'error'; code: WorkerErrorCode }
   | { type: 'cancelled' };

@@ -46,7 +46,7 @@ export function rasterizeLayer(style: LayerStyle, frameHeight: number): ImageBit
 
 function requiredContext(canvas: OffscreenCanvas) {
   const context = canvas.getContext('2d');
-  if (!context) throw new Error('Canvas2D недоступен.');
+  if (!context) throw new Error('Canvas2D is unavailable.');
   return context;
 }
 

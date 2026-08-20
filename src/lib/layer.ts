@@ -25,6 +25,8 @@ export type LayerStyle = {
   y: number;
   startTime: number;
   endTime: number;
+  fadeIn: boolean;
+  fadeOut: boolean;
 };
 
 export const DEFAULT_LAYER: LayerStyle = {
@@ -41,6 +43,8 @@ export const DEFAULT_LAYER: LayerStyle = {
   y: 0.85,
   startTime: 0,
   endTime: Number.POSITIVE_INFINITY,
+  fadeIn: true,
+  fadeOut: true,
 };
 
 const STROKE_FRACTIONS: Record<StrokeWidth, number> = {
@@ -54,10 +58,10 @@ export function strokeWidthPixels(style: Pick<LayerStyle, 'fontSizeFraction' | '
   return frameHeight * style.fontSizeFraction * STROKE_FRACTIONS[style.strokeWidth];
 }
 
-/** A Layer fades over exactly one second at each finite temporal boundary. */
-export function layerOpacity(style: Pick<LayerStyle, 'startTime' | 'endTime'>, time: number) {
+/** A Layer can fade for one second at either temporal boundary. */
+export function layerOpacity(style: Pick<LayerStyle, 'startTime' | 'endTime' | 'fadeIn' | 'fadeOut'>, time: number) {
   if (time < style.startTime || time > style.endTime) return 0;
-  const fadeIn = Math.min(1, Math.max(0, time - style.startTime));
-  const fadeOut = Number.isFinite(style.endTime) ? Math.min(1, Math.max(0, style.endTime - time)) : 1;
+  const fadeIn = style.fadeIn ? Math.min(1, Math.max(0, time - style.startTime)) : 1;
+  const fadeOut = style.fadeOut && Number.isFinite(style.endTime) ? Math.min(1, Math.max(0, style.endTime - time)) : 1;
   return Math.min(fadeIn, fadeOut);
 }

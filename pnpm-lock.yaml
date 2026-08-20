@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@ariefsn/svelte-video-editor':
-        specifier: ^1.1.0
-        version: 1.1.0(svelte@5.56.9)
       mediabunny:
         specifier: ^1.30.0
         version: 1.55.1
@@ -38,11 +35,6 @@ importers:
         version: 3.2.7
 
 packages:
-
-  '@ariefsn/svelte-video-editor@1.1.0':
-    resolution: {integrity: sha512-6x4ZU4HmUtrwPdy4tQ9nvq+eRrCPtYUZL9zRk3n7yGiRBjiV7UvtQQnTxihPQJ3e9w/8T497IqRAD6S3iU8Tkw==}
-    peerDependencies:
-      svelte: ^5.0.0
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -215,11 +207,6 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
-
-  '@lucide/svelte@1.32.0':
-    resolution: {integrity: sha512-fiiaK7PSIndDmYxxf1otAl1rlybF+x1pUxFFJr0Ov7OCgp/CKOXum90t/1YaRbadGAi25Mue+UgifZmufUi+Cw==}
-    peerDependencies:
-      svelte: ^5
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
@@ -616,9 +603,6 @@ packages:
     resolution: {integrity: sha512-VT8kSnlEg8069w7AiCcAk3Yf5xvMnrGTagVOmU/OpOLHaHnNqXhWZCH/4EVga/bT/HtWhvE6/fHrXLErx7OnJA==}
     engines: {node: '>=18'}
 
-  tailwind-merge@3.6.0:
-    resolution: {integrity: sha512-uxL7qAVQriqRQPAyK3pj66VqskWqoZ37PW94jwOTwNfq/z9oyu1V+eqrZqtR2+fCiXdYOZe/Modt8GtvqNzu+w==}
-
   tinybench@2.9.0:
     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
 
@@ -737,13 +721,6 @@ packages:
 
 snapshots:
 
-  '@ariefsn/svelte-video-editor@1.1.0(svelte@5.56.9)':
-    dependencies:
-      '@lucide/svelte': 1.32.0(svelte@5.56.9)
-      clsx: 2.1.1
-      svelte: 5.56.9
-      tailwind-merge: 3.6.0
-
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
 
@@ -840,10 +817,6 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
-
-  '@lucide/svelte@1.32.0(svelte@5.56.9)':
-    dependencies:
-      svelte: 5.56.9
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
@@ -1217,8 +1190,6 @@ snapshots:
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
-
-  tailwind-merge@3.6.0: {}
 
   tinybench@2.9.0: {}
 
