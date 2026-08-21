@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import LayerInspector from './lib/components/LayerInspector.svelte';
   import BatchExportProgress from './lib/components/BatchExportProgress.svelte';
   import LogoInspector from './lib/components/LogoInspector.svelte';
@@ -19,7 +20,7 @@
   import { appendVideoBatch, fittedLogoSettingKeys, hasLogoBatchDefault, initialLogoBatchEditorTarget, rejectVideoBatchItem, removeVideoBatchItem, resetVideoLogoOverride, resetVideoLogoOverrideProperty, resolveVideoLogoSettings, seekVideoBatchItem, supportedVideoBatchItems, updateVideoLogoOverride, validateVideoBatchItem, videoBatchPlayhead, type LogoBatchEditorTarget, type LogoSettingKey, type VideoBatchItem, type VideoBatchPlayheads, type VideoLogoOverrides } from './lib/video-batch';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
-  type ExportState = 'idle' | 'exporting' | 'done' | 'error';
+  type ExportState = 'idle' | 'exporting' | 'cancelling' | 'done' | 'error';
   type BatchExportResult = { item: ProcessableBatchExportItem; file: File; output: TemporaryOutput };
   type BatchExportAttemptKind = 'initial' | 'retry';
   type BatchStorageState =
@@ -70,6 +71,15 @@
   let videoBatchPlayheads: VideoBatchPlayheads = {};
   const validationWorkers = new Map<string, Worker>();
   let validationQueue: string[] = [];
+  const pendingDownloadOutputs = new Set<TemporaryOutput>();
+
+  onMount(() => {
+    window.addEventListener('pagehide', discardExportResources);
+    return () => {
+      window.removeEventListener('pagehide', discardExportResources);
+      discardExportResources();
+    };
+  });
 
   $: activeLayer = getActiveLayer(project);
   $: editorReady = workflow === 'text' && previewReady && !trimRequired && canExportProject(project);
@@ -317,26 +327,13 @@
   }
 
   function invalidateExport(terminateWorker = true) {
-    exportAttempt += 1;
-    archiveAbortController?.abort();
-    archiveAbortController = undefined;
-    if (terminateWorker) {
-      cancelWorkerTask?.();
-      cancelWorkerTask = undefined;
-      worker?.terminate();
-      worker = undefined;
-    }
+    stopActiveExportWork(terminateWorker);
     void cleanupTemporaryOutput();
     void cleanupBatchExportResults();
-    stopTimer();
     exportUnlocked = false;
     exportState = 'idle';
     progress = 0;
-    batchExportQueue = [];
-    batchExportAttemptKind = 'initial';
-    batchExportAttemptItemIds = [];
-    batchArchiveNames = {};
-    batchExportPreset = undefined;
+    resetBatchExportAttempt();
     elapsed = 0;
     error = '';
   }
@@ -754,23 +751,66 @@
     anchor.href = url;
     anchor.download = name;
     anchor.click();
+    for (const output of outputs) pendingDownloadOutputs.add(output);
     setTimeout(() => {
       URL.revokeObjectURL(url);
-      void Promise.all(outputs.map(({ dispose }) => dispose())).catch(() => { error = errorKey('storage'); });
+      void disposeDownloadedOutputs(outputs);
     }, 1000);
   }
   function stopTimer() { if (exportTimer) clearInterval(exportTimer); exportTimer = undefined; }
-  function cancelExport() {
+  function stopActiveExportWork(terminateWorker = true) {
     exportAttempt += 1;
     archiveAbortController?.abort();
     archiveAbortController = undefined;
-    cancelWorkerTask?.(); cancelWorkerTask = undefined;
-    worker?.terminate(); worker = undefined;
-    stopTimer(); exportState = 'idle'; progress = 0; batchExportQueue = [];
+    if (terminateWorker) {
+      cancelWorkerTask?.(); cancelWorkerTask = undefined;
+      worker?.terminate(); worker = undefined;
+    }
+    stopTimer();
+  }
+  function resetBatchExportAttempt() {
+    batchExportQueue = [];
     batchExportAttemptKind = 'initial'; batchExportAttemptItemIds = [];
     batchArchiveNames = {}; batchExportPreset = undefined;
+  }
+  async function cancelExport() {
+    if (exportState !== 'exporting') return;
+    if (workflow === 'logo' && !window.confirm($t('logo.cancelConfirm'))) return;
+
+    stopActiveExportWork();
+    exportState = 'cancelling';
+    progress = 0;
+    elapsed = 0;
+    const [currentCleaned, resultsCleaned] = await Promise.all([
+      cleanupTemporaryOutput(),
+      cleanupBatchExportResults(),
+    ]);
+    resetBatchExportAttempt();
+    if (currentCleaned && resultsCleaned) {
+      error = '';
+      exportState = 'idle';
+    } else {
+      error = errorKey('storage');
+      exportState = 'error';
+    }
+  }
+  function discardExportResources() {
+    stopActiveExportWork();
     void cleanupTemporaryOutput();
     void cleanupBatchExportResults();
+    void disposeDownloadedOutputs([...pendingDownloadOutputs], false);
+  }
+  async function disposeDownloadedOutputs(outputs: readonly TemporaryOutput[], reportFailure = true) {
+    const disposed = await Promise.all(outputs.map(async (output) => {
+      try {
+        await output.dispose();
+        pendingDownloadOutputs.delete(output);
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+    if (reportFailure && disposed.some((success) => !success)) error = errorKey('storage');
   }
   async function cleanupTemporaryOutput() {
     const output = temporaryOutput;
@@ -1082,7 +1122,7 @@
               <div class="notice success">{$t('export.saved')}</div>
             {/if}
           {/if}
-          <button class="export-button" onclick={() => exportVideo()} disabled={exportState === 'exporting' || workflow === 'logo' && batchStorageState.status !== 'available'}><span>{$t('export.button')}</span><b>→</b></button>
+          <button class="export-button" onclick={() => exportVideo()} disabled={exportState === 'exporting' || exportState === 'cancelling' || workflow === 'logo' && batchStorageState.status !== 'available'}><span>{$t('export.button')}</span><b>→</b></button>
           {#if exportState === 'error'}<button class="retry" onclick={() => exportVideo('light')}>{$t('export.retry')}</button>{/if}
         </section>
       </div>
@@ -1100,4 +1140,4 @@
   </div>
 {/if}
 
-{#if exportState === 'exporting'}<div class="progress-overlay" role="dialog" aria-modal="true" aria-label={$t('progress.label')}><section class="progress-card" class:batch-progress-card={workflow === 'logo'}><div class="render-orbit"><span></span><b>{progress}%</b></div><span class="eyebrow">{$t(workflow === 'logo' ? batchExportAttemptKind === 'retry' ? 'logo.retryOverall' : 'logo.exportOverall' : 'progress.rendering')}</span><h2>{$t('progress.composing')}</h2><p>{$t('progress.elapsed', { seconds: elapsed })}</p>{#if workflow === 'logo'}<BatchExportProgress items={batchExportAttemptQueue} queueLabel={batchExportAttemptKind === 'retry' ? 'logo.retryQueue' : 'logo.exportQueue'} />{/if}<progress value={progress} max="100"></progress><button class="secondary" onclick={cancelExport}>{$t('common.cancel')}</button></section></div>{/if}
+{#if exportState === 'exporting' || exportState === 'cancelling'}<div class="progress-overlay" role="dialog" aria-modal="true" aria-label={$t('progress.label')}><section class="progress-card" class:batch-progress-card={workflow === 'logo'}><div class="render-orbit"><span></span><b>{progress}%</b></div><span class="eyebrow">{$t(workflow === 'logo' ? batchExportAttemptKind === 'retry' ? 'logo.retryOverall' : 'logo.exportOverall' : 'progress.rendering')}</span><h2>{$t(exportState === 'cancelling' && workflow === 'logo' ? 'logo.cancelling' : 'progress.composing')}</h2><p>{$t('progress.elapsed', { seconds: elapsed })}</p>{#if workflow === 'logo'}<BatchExportProgress items={batchExportAttemptQueue} queueLabel={batchExportAttemptKind === 'retry' ? 'logo.retryQueue' : 'logo.exportQueue'} />{/if}<progress value={progress} max="100"></progress><button class="secondary" onclick={cancelExport} disabled={exportState === 'cancelling'}>{$t('common.cancel')}</button></section></div>{/if}
