@@ -27,9 +27,12 @@ self.onmessage = ({ data }: MessageEvent<ExportRequest | ValidateRequest>) => {
   });
 };
 
-async function validateFile({ file }: ValidateRequest) {
-  if (!('VideoDecoder' in self)) throw new WorkerFailure('webCodecs');
+async function validateFile({ file, maxDuration }: ValidateRequest) {
   if (!isSupportedContainer(file)) throw new WorkerFailure('container');
+  if (!('VideoDecoder' in self)) throw new WorkerFailure('webCodecs');
+  if (maxDuration !== undefined && (!('OffscreenCanvas' in self) || !('VideoEncoder' in self))) {
+    throw new WorkerFailure('capabilities');
+  }
   const input = new Input({ formats: [MP4], source: new BlobSource(file) });
   try {
     const videoTrack = await input.getPrimaryVideoTrack();
@@ -44,6 +47,7 @@ async function validateFile({ file }: ValidateRequest) {
     if (!decoderConfig || !(await VideoDecoder.isConfigSupported(decoderConfig)).supported) throw new WorkerFailure('videoCodec');
     if (width > 3840 || height > 3840) throw new WorkerFailure('resolution');
     if (!duration || duration <= 0) throw new WorkerFailure('duration');
+    if (maxDuration !== undefined && duration > maxDuration) throw new WorkerFailure('durationLimit');
     const supportedAudio = audioTrack ? await isAacLc(audioTrack) : true;
     post({ type: 'validated', metadata: { duration, width, height, unsupportedAudio: !supportedAudio } });
   } finally {

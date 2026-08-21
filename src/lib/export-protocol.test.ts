@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ExportPreset, ExportRequest, WorkerMessage } from './export-protocol';
+import type { ExportPreset, ExportRequest, ValidateRequest, WorkerErrorCode, WorkerMessage } from './export-protocol';
 
 describe('export worker protocol', () => {
   it('defines the supported export presets', () => {
@@ -31,5 +31,13 @@ describe('export worker protocol', () => {
     expect(request.logo).toBe(logo);
     expect(completed.type).toBe('complete');
     expect(completed.file).toBeInstanceOf(File);
+  });
+
+  it('lets Batch validation enforce its own duration limit with a precise error', () => {
+    const request: ValidateRequest = { type: 'validate', file: new File([], 'clip.mov'), maxDuration: 120 };
+    const error: WorkerErrorCode = 'durationLimit';
+
+    expect(request.maxDuration).toBe(120);
+    expect(error).toBe('durationLimit');
   });
 });

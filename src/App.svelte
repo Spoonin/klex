@@ -3,17 +3,20 @@
   import LogoInspector from './lib/components/LogoInspector.svelte';
   import LogoStage from './lib/components/LogoStage.svelte';
   import StepIndicator from './lib/components/StepIndicator.svelte';
+  import VideoBatchList from './lib/components/VideoBatchList.svelte';
   import VideoStage from './lib/components/VideoStage.svelte';
   import { canExportProject, createEditorProject, getActiveLayer, updateEditorProject, type EditorProjectAction } from './lib/editor-project';
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
-  import { DEFAULT_LOGO_SETTINGS, LogoValidationError, fitLogoSettings, isLogoVideoDurationSupported, maximumLogoSize, validateLogoFile, type LogoSettings, type LogoSource } from './lib/logo';
+  import { DEFAULT_LOGO_SETTINGS, LogoValidationError, fitLogoSettings, maximumLogoSize, validateLogoFile, type LogoSettings, type LogoSource } from './lib/logo';
   import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
+  import { appendVideoBatch, rejectVideoBatchItem, removeVideoBatchItem, supportedVideoBatchItems, validateVideoBatchItem, type VideoBatchItem } from './lib/video-batch';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
+  const MAX_CONCURRENT_VALIDATIONS = 2;
 
   let workflow: Workflow | null = null;
   let step: WorkflowStep = 1;
@@ -41,6 +44,9 @@
   let logoState: 'idle' | 'validating' | 'ready' | 'error' = 'idle';
   let logoValidationAttempt = 0;
   let logoSettings: LogoSettings = { ...DEFAULT_LOGO_SETTINGS };
+  let videoBatch: VideoBatchItem[] = [];
+  const validationWorkers = new Map<string, Worker>();
+  let validationQueue: string[] = [];
 
   $: activeLayer = getActiveLayer(project);
   $: logoSource = logoFile && logoMetadata
@@ -49,6 +55,8 @@
   $: editorReady = workflow === 'text' && previewReady && !trimRequired && canExportProject(project);
   $: logoEditorReady = workflow === 'logo' && previewReady && !!file && !!logoSource && !!sourceMetadata;
   $: readyToExport = editorReady || logoEditorReady;
+  $: supportedBatch = supportedVideoBatchItems(videoBatch);
+  $: validatingVideoCount = videoBatch.filter(({ status }) => status === 'validating').length;
 
   function dispatch(action: EditorProjectAction) { project = updateEditorProject(project, action); }
 
@@ -63,6 +71,17 @@
     event.preventDefault();
     const next = event.dataTransfer?.files[0];
     if (next) await acceptFile(next);
+  }
+
+  function selectBatchFiles(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    addBatchFiles(input.files ?? []);
+    input.value = '';
+  }
+
+  function dropBatchFiles(event: DragEvent) {
+    event.preventDefault();
+    addBatchFiles(event.dataTransfer?.files ?? []);
   }
 
   async function selectLogoFile(event: Event) {
@@ -94,7 +113,6 @@
       logoUrl = URL.createObjectURL(next);
       logoState = 'ready';
       previewReady = false;
-      if (fileState === 'ready') step = 2;
     } catch (cause) {
       if (attempt !== logoValidationAttempt) return;
       error = `error.${cause instanceof LogoValidationError ? cause.code : 'logoDecode'}` as MessageKey;
@@ -107,20 +125,80 @@
     fileState = 'validating';
     const metadata = await validateFile(next);
     if (!metadata) return;
-    if (workflow === 'logo' && !isLogoVideoDurationSupported(metadata.duration, MAX_TRIM_DURATION)) {
-      error = 'error.logoVideoDuration';
-      fileState = 'error';
-      return;
+    useSource(next, metadata);
+    trimRequired = metadata.duration > MAX_TRIM_DURATION;
+    step = 2;
+  }
+
+  function addBatchFiles(files: Iterable<File>) {
+    const nextFiles = Array.from(files);
+    if (!nextFiles.length) return;
+    if (exportUnlocked || exportState !== 'idle') invalidateExport();
+    const previousIds = new Set(videoBatch.map(({ id }) => id));
+    videoBatch = appendVideoBatch(videoBatch, nextFiles, () => crypto.randomUUID());
+    for (const item of videoBatch) {
+      if (!previousIds.has(item.id)) validationQueue.push(item.id);
     }
+    pumpBatchValidations();
+  }
+
+  function pumpBatchValidations() {
+    while (validationWorkers.size < MAX_CONCURRENT_VALIDATIONS && validationQueue.length) {
+      const id = validationQueue.shift();
+      const item = videoBatch.find((candidate) => candidate.id === id && candidate.status === 'validating');
+      if (item) validateBatchItem(item);
+    }
+  }
+
+  function validateBatchItem(item: VideoBatchItem) {
+    const validationWorker = new Worker(new URL('./workers/export.worker.ts', import.meta.url), { type: 'module' });
+    validationWorkers.set(item.id, validationWorker);
+    validationWorker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
+      if (!videoBatch.some(({ id }) => id === item.id)) return finishBatchValidation(item.id);
+      if (data.type === 'validated') videoBatch = validateVideoBatchItem(videoBatch, item.id, data.metadata);
+      else if (data.type === 'error') videoBatch = rejectVideoBatchItem(videoBatch, item.id, data.code);
+      if (data.type === 'validated' || data.type === 'error') finishBatchValidation(item.id);
+    };
+    validationWorker.onerror = () => {
+      if (videoBatch.some(({ id }) => id === item.id)) videoBatch = rejectVideoBatchItem(videoBatch, item.id, 'generic');
+      finishBatchValidation(item.id);
+    };
+    validationWorker.postMessage({ type: 'validate', file: item.file, maxDuration: MAX_TRIM_DURATION });
+  }
+
+  function finishBatchValidation(id: string) {
+    validationWorkers.get(id)?.terminate();
+    validationWorkers.delete(id);
+    pumpBatchValidations();
+  }
+
+  function removeBatchVideo(id: string) {
+    const removedActiveSource = videoBatch.find((item) => item.id === id)?.file === file;
+    validationQueue = validationQueue.filter((queuedId) => queuedId !== id);
+    videoBatch = removeVideoBatchItem(videoBatch, id);
+    finishBatchValidation(id);
+    invalidateExport();
+    if (removedActiveSource) resetSource();
+  }
+
+  function continueLogoBatch() {
+    const first = supportedVideoBatchItems(videoBatch)[0];
+    if (!first?.metadata || !logoSource) return;
+    useSource(first.file, first.metadata);
+    step = 2;
+  }
+
+  function useSource(next: File, metadata: SourceMetadata) {
+    invalidateExport();
+    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     file = next;
     sourceMetadata = metadata;
     if (logoMetadata) logoSettings = fitLogoSettings(logoMetadata, metadata, logoSettings);
     sourceUrl = URL.createObjectURL(next);
     unsupportedAudio = metadata.unsupportedAudio;
     project = updateEditorProject(project, { type: 'source-loaded', duration: metadata.duration });
-    trimRequired = workflow === 'text' && metadata.duration > MAX_TRIM_DURATION;
     fileState = 'ready';
-    if (workflow === 'text' || logoState === 'ready') step = 2;
+    previewReady = false;
   }
 
   function resetSource() {
@@ -134,6 +212,13 @@
     unsupportedAudio = false;
     trimRequired = false;
     project = createEditorProject('layer-1');
+  }
+
+  function resetVideoBatch() {
+    for (const validationWorker of validationWorkers.values()) validationWorker.terminate();
+    validationWorkers.clear();
+    validationQueue = [];
+    videoBatch = [];
   }
 
   function invalidateExport(terminateWorker = true) {
@@ -167,16 +252,19 @@
   }
 
   function returnToWorkflowChoice() {
-    const hasWork = fileState !== 'idle' || logoState !== 'idle' || exportState !== 'idle';
+    const hasWork = fileState !== 'idle' || logoState !== 'idle' || videoBatch.length > 0 || exportState !== 'idle';
     if (needsDiscardConfirmation(workflow, hasWork) && !window.confirm($t('scenario.confirmDiscard'))) return;
     resetSource();
     resetLogo();
+    resetVideoBatch();
     workflow = null;
     step = 1;
   }
 
   function navigate(next: WorkflowStep) {
-    if (next === 1 || (next === 2 && (workflow === 'text' ? !!file : !!file && !!logoSource)) || (next === 3 && exportUnlocked)) step = next;
+    if (next === 1) step = next;
+    else if (next === 2 && workflow === 'logo') continueLogoBatch();
+    else if ((next === 2 && !!file) || (next === 3 && exportUnlocked)) step = next;
   }
 
   function addLayer() { dispatch({ type: 'layer-added', id: crypto.randomUUID(), text: $t('inspector.caption') }); }
@@ -310,7 +398,9 @@
     }
   }
   function formatDuration(value: number) { return `${Math.floor(value / 60)}:${Math.round(value % 60).toString().padStart(2, '0')}`; }
-  function errorKey(code: WorkerErrorCode): MessageKey { return `error.${code}` as MessageKey; }
+  function errorKey(code: WorkerErrorCode): MessageKey {
+    return code === 'durationLimit' ? 'error.logoVideoDuration' : `error.${code}` as MessageKey;
+  }
   function chooseLocale(event: Event) { setLocale((event.currentTarget as HTMLSelectElement).value as Locale); }
 </script>
 
@@ -373,14 +463,19 @@
         </div>
         <div class="file-picker">
           <span class="kicker">{$t('logo.videoLabel')}</span>
-          <label class:loading={fileState === 'validating'} class:ready={fileState === 'ready'} class="dropzone logo-dropzone" ondragover={(event) => event.preventDefault()} ondrop={dropFile}>
-            <input type="file" accept="video/mp4,video/quicktime,.mp4,.mov" onchange={selectFile} disabled={fileState === 'validating'} />
-            <span class="upload-icon">↑</span><strong>{$t(fileState === 'ready' ? 'logo.selected' : 'logo.videoDrop')}</strong><p>{file?.name ?? $t('logo.videoHint')}</p>
+          <label class:loading={validatingVideoCount > 0} class:ready={supportedBatch.length > 0} class="dropzone logo-dropzone" ondragover={(event) => event.preventDefault()} ondrop={dropBatchFiles}>
+            <input type="file" accept="video/mp4,video/quicktime,.mp4,.mov" multiple onchange={selectBatchFiles} />
+            <span class="upload-icon">↑</span><strong>{$t('logo.videoDrop')}</strong><p>{$t('logo.videoHint')}</p>
             <div><span>{$t('logo.videoLimits', { seconds: MAX_TRIM_DURATION })}</span></div>
           </label>
         </div>
       </div>
-      {#if (fileState === 'error' || logoState === 'error') && error}<div class="notice error" role="alert">{$t(error, { seconds: MAX_TRIM_DURATION })}</div>{/if}
+      <VideoBatchList items={videoBatch} onRemove={removeBatchVideo} />
+      {#if logoState === 'error' && error}<div class="notice error" role="alert">{$t(error, { seconds: MAX_TRIM_DURATION })}</div>{/if}
+      <div class="batch-actions">
+        <span>{$t('logo.batchSupported', { count: supportedBatch.length })}</span>
+        <button class="primary" disabled={!logoSource || supportedBatch.length === 0} onclick={continueLogoBatch}>{$t('logo.batchContinue')} →</button>
+      </div>
       <div class="privacy-note"><span>✦</span><p><strong>{$t('privacy.title')}</strong><br />{$t('privacy.body')}</p></div>
       <button class="secondary workflow-back" onclick={returnToWorkflowChoice}>← {$t('brand.home')}</button>
     </section>

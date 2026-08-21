@@ -1,5 +1,5 @@
 export type ExportPreset = 'high' | 'standard' | 'light';
-export type WorkerErrorCode = 'webCodecs' | 'container' | 'noVideo' | 'videoCodec' | 'resolution' | 'duration' | 'capabilities' | 'storage' | 'decoder' | 'encoder' | 'logoDecode' | 'generic';
+export type WorkerErrorCode = 'webCodecs' | 'container' | 'noVideo' | 'videoCodec' | 'resolution' | 'duration' | 'durationLimit' | 'capabilities' | 'storage' | 'decoder' | 'encoder' | 'logoDecode' | 'generic';
 
 export type ExportRequest = {
   type: 'export';
@@ -11,7 +11,7 @@ export type ExportRequest = {
   output: FileSystemFileHandle;
 };
 
-export type ValidateRequest = { type: 'validate'; file: File };
+export type ValidateRequest = { type: 'validate'; file: File; maxDuration?: number };
 
 export type SourceMetadata = {
   duration: number;
