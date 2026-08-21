@@ -6,6 +6,7 @@
 
   export let items: readonly BatchExportItem[];
   export let showSummary = false;
+  export let queueLabel: MessageKey = 'logo.exportQueue';
 
   function itemProgress(item: BatchExportItem) {
     return item.metadata ? Math.round(item.completed / item.metadata.duration * 100) : 0;
@@ -23,7 +24,7 @@
   }, { ready: 0, error: 0, skipped: 0 });
 </script>
 
-<ol class="batch-export-progress" aria-label={$t('logo.exportQueue')}>
+<ol class="batch-export-progress" aria-label={$t(queueLabel)}>
   {#each items as item, index (item.id)}
     <li class:processing={item.status === 'processing'} class:ready={item.status === 'ready'} class:error={item.status === 'error'} class:skipped={item.status === 'skipped'}>
       <span class="batch-index">{index + 1}</span>

@@ -3,6 +3,7 @@ import type { SourceMetadata } from './export-protocol';
 import {
   BatchExportStorageUnavailableError,
   checkBatchExportStorage,
+  estimateBatchRetryBytes,
   estimateBatchExportBytes,
 } from './batch-export-storage';
 
@@ -40,6 +41,17 @@ describe('Batch export storage', () => {
 
     expect(enough).toEqual({ requiredBytes: required, availableBytes: required, hasCapacity: true });
     expect(short).toEqual({ requiredBytes: required, availableBytes: required - 1, hasCapacity: false });
+  });
+
+  it('counts retained MP4s only in the replacement ZIP during a retry', () => {
+    const failed = [metadata(90)];
+    const retainedBytes = 12 * 1024 * 1024;
+    const retry = estimateBatchRetryBytes(failed, 'standard', retainedBytes, 2);
+    const withoutRetainedResult = estimateBatchRetryBytes(failed, 'standard', 0, 2);
+    const fullFreshExport = estimateBatchExportBytes([metadata(30), ...failed], 'standard');
+
+    expect(retry).toBeGreaterThan(withoutRetainedResult);
+    expect(retry).toBeLessThan(fullFreshExport + retainedBytes);
   });
 
   it('does not impose a file-count limit when quota is sufficient', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createBatchArchiveEntries, writeStoredZip } from './batch-archive';
+import { createBatchArchiveEntries, createBatchArchiveNames, writeStoredZip } from './batch-archive';
 
 describe('Batch ZIP archive', () => {
   it('keeps upload order and assigns stable suffixes to duplicate source names', () => {
@@ -19,6 +19,13 @@ describe('Batch ZIP archive', () => {
       'CLIP-klex-3.mp4',
     ]);
     expect(entries.map(({ file }) => file)).toEqual(files);
+  });
+
+  it('can assign names before failed results are filtered out', () => {
+    const names = createBatchArchiveNames(['clip.mov', 'clip.mp4', 'other.mov']);
+
+    expect(names).toEqual(['clip-klex.mp4', 'clip-klex-2.mp4', 'other-klex.mp4']);
+    expect([names[1], names[2]]).toEqual(['clip-klex-2.mp4', 'other-klex.mp4']);
   });
 
   it('streams valid store entries with UTF-8 names into the output handle', async () => {

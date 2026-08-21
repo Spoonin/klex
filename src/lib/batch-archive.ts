@@ -23,14 +23,20 @@ const DOS_DATE = 0x0021; // 1980-01-01
 
 /** Assigns deterministic, case-insensitively unique MP4 names in upload order. */
 export function createBatchArchiveEntries(sources: readonly BatchArchiveSource[]): BatchArchiveEntry[] {
+  const names = createBatchArchiveNames(sources.map(({ sourceName }) => sourceName));
+  return sources.map(({ file }, index) => ({ name: names[index], file }));
+}
+
+/** Assigns names for a complete Batch before successful results are selected for an archive. */
+export function createBatchArchiveNames(sourceNames: readonly string[]): string[] {
   const counts = new Map<string, number>();
-  return sources.map(({ sourceName, file }) => {
+  return sourceNames.map((sourceName) => {
     const stem = sourceName.replace(/\.[^.]+$/, '') || 'video';
     const base = `${stem}-klex`;
     const key = base.toLocaleLowerCase('en-US');
     const count = (counts.get(key) ?? 0) + 1;
     counts.set(key, count);
-    return { name: `${base}${count === 1 ? '' : `-${count}`}.mp4`, file };
+    return `${base}${count === 1 ? '' : `-${count}`}.mp4`;
   });
 }
 

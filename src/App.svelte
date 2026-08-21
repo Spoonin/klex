@@ -7,9 +7,9 @@
   import VideoBatchList from './lib/components/VideoBatchList.svelte';
   import VideoStage from './lib/components/VideoStage.svelte';
   import { canExportProject, createEditorProject, getActiveLayer, updateEditorProject, type EditorProjectAction } from './lib/editor-project';
-  import { createBatchArchiveEntries, writeStoredZip } from './lib/batch-archive';
-  import { batchExportDownloadKind, batchExportProgress, batchExportSummary, completeBatchExportItem, createBatchExportQueue, createBatchExportRequest, failBatchExportItem, processableBatchExportItems, resolveBatchExportLogoSource, startNextBatchExportItem, updateBatchExportProgress, type BatchExportItem, type ProcessableBatchExportItem } from './lib/batch-export';
-  import { BatchExportStorageUnavailableError, checkBatchExportStorage, type BatchExportStorageCapacity } from './lib/batch-export-storage';
+  import { createBatchArchiveNames, writeStoredZip } from './lib/batch-archive';
+  import { batchExportDownloadKind, batchExportProgress, batchExportSummary, completeBatchExportItem, createBatchExportQueue, createBatchExportRequest, failBatchExportItem, processableBatchExportItems, resolveBatchExportLogoSource, retryFailedBatchExportItems, retryableBatchExportItems, startNextBatchExportItem, updateBatchExportProgress, type BatchExportItem, type ProcessableBatchExportItem } from './lib/batch-export';
+  import { BatchExportStorageUnavailableError, checkBatchExportStorage, checkBatchRetryStorage, type BatchExportStorageCapacity } from './lib/batch-export-storage';
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
@@ -21,6 +21,7 @@
 
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
   type BatchExportResult = { item: ProcessableBatchExportItem; file: File; output: TemporaryOutput };
+  type BatchExportAttemptKind = 'initial' | 'retry';
   type BatchStorageState =
     | { status: 'idle' | 'checking' | 'unavailable' }
     | ({ status: 'available' | 'insufficient' } & BatchExportStorageCapacity);
@@ -48,6 +49,10 @@
   let temporaryOutput: TemporaryOutput | undefined;
   let batchExportQueue: BatchExportItem[] = [];
   let batchExportResults: BatchExportResult[] = [];
+  let batchExportAttemptKind: BatchExportAttemptKind = 'initial';
+  let batchExportAttemptItemIds: string[] = [];
+  let batchArchiveNames: Readonly<Record<string, string>> = {};
+  let batchExportPreset: ExportPreset | undefined;
   let batchStorageState: BatchStorageState = { status: 'idle' };
   let batchStorageCheckAttempt = 0;
   let archiveAbortController: AbortController | undefined;
@@ -103,6 +108,7 @@
   $: validatingVideoCount = videoBatch.filter(({ status }) => status === 'validating').length;
   $: batchHasUnsupportedAudio = supportedBatch.some(({ metadata }) => metadata?.unsupportedAudio);
   $: batchResultSummary = batchExportSummary(batchExportQueue);
+  $: batchExportAttemptQueue = batchExportQueue.filter(({ id }) => batchExportAttemptItemIds.includes(id));
   $: batchStorageSignature = workflow === 'logo'
     ? `${preset}:${supportedBatch.map(({ id, metadata }) => `${id}:${metadata?.duration}:${metadata?.audioBitrate}`).join('|')}`
     : '';
@@ -327,6 +333,10 @@
     exportState = 'idle';
     progress = 0;
     batchExportQueue = [];
+    batchExportAttemptKind = 'initial';
+    batchExportAttemptItemIds = [];
+    batchArchiveNames = {};
+    batchExportPreset = undefined;
     elapsed = 0;
     error = '';
   }
@@ -517,7 +527,15 @@
     if (attempt !== exportAttempt) return;
 
     batchExportQueue = createBatchExportQueue(videoBatch);
-    const exportItems = processableBatchExportItems(batchExportQueue).map((item) => ({
+    const processableItems = processableBatchExportItems(batchExportQueue);
+    const archiveNames = createBatchArchiveNames(processableItems.map(({ file }) => file.name));
+    const namesById: Record<string, string> = {};
+    processableItems.forEach(({ id }, index) => namesById[id] = archiveNames[index]);
+    batchArchiveNames = namesById;
+    batchExportPreset = nextPreset;
+    batchExportAttemptKind = 'initial';
+    batchExportAttemptItemIds = processableItems.map(({ id }) => id);
+    const exportItems = processableItems.map((item) => ({
       item,
       logo: resolveBatchExportLogoSource(
         item,
@@ -527,6 +545,54 @@
         logoVideoOverrides,
       ),
     }));
+    await runLogoBatchExportItems(exportItems, nextPreset, attempt);
+  }
+
+  async function retryFailedLogoBatch() {
+    if (!logoFile || !logoMetadata || exportState !== 'done') return;
+    const batchLogoFile = logoFile;
+    const batchLogoMetadata = logoMetadata;
+    const failedItems = retryableBatchExportItems(batchExportQueue);
+    if (!failedItems.length) return;
+    const retryPreset = batchExportPreset ?? preset;
+    const capacity = await refreshBatchRetryStorage(
+      failedItems.map(({ metadata }) => metadata),
+      retryPreset,
+      batchExportQueue.filter(({ metadata }) => !!metadata).length,
+    );
+    if (!capacity?.hasCapacity) return;
+
+    const attempt = ++exportAttempt;
+    cancelWorkerTask?.(); cancelWorkerTask = undefined;
+    worker?.terminate(); worker = undefined; stopTimer();
+    exportState = 'exporting'; progress = 0; elapsed = 0; error = '';
+    if (!await cleanupTemporaryOutput()) {
+      exportState = 'error';
+      return;
+    }
+    if (attempt !== exportAttempt) return;
+
+    batchExportAttemptKind = 'retry';
+    batchExportAttemptItemIds = failedItems.map(({ id }) => id);
+    batchExportQueue = retryFailedBatchExportItems(batchExportQueue);
+    const retryItems = processableBatchExportItems(batchExportQueue).map((item) => ({
+      item,
+      logo: resolveBatchExportLogoSource(
+        item,
+        batchLogoFile,
+        batchLogoMetadata,
+        logoBatchDefault,
+        logoVideoOverrides,
+      ),
+    }));
+    await runLogoBatchExportItems(retryItems, retryPreset, attempt);
+  }
+
+  async function runLogoBatchExportItems(
+    exportItems: readonly { item: ProcessableBatchExportItem; logo: LogoSource }[],
+    nextPreset: ExportPreset,
+    attempt: number,
+  ) {
     exportTimer = setInterval(() => elapsed += 1, 1000);
 
     for (const { item, logo } of exportItems) {
@@ -536,19 +602,23 @@
       if (attempt !== exportAttempt || result.type === 'cancelled') return;
       if (result.type === 'error') {
         batchExportQueue = failBatchExportItem(batchExportQueue, item.id, result.code);
-        progress = batchExportProgress(batchExportQueue);
+        progress = currentBatchExportAttemptProgress(batchExportQueue);
         await cleanupTemporaryOutput();
         continue;
       }
-      batchExportResults = [...batchExportResults, { item, file: result.file, output: result.output }];
+      batchExportResults = [
+        ...batchExportResults.filter(({ item: completed }) => completed.id !== item.id),
+        { item, file: result.file, output: result.output },
+      ];
       batchExportQueue = completeBatchExportItem(batchExportQueue, item.id);
-      progress = batchExportProgress(batchExportQueue);
+      progress = currentBatchExportAttemptProgress(batchExportQueue);
     }
 
     stopTimer();
     progress = 100;
     error = '';
-    const downloadKind = batchExportDownloadKind(exportItems.length, batchExportResults.length);
+    const processableCount = batchExportQueue.filter(({ metadata }) => !!metadata).length;
+    const downloadKind = batchExportDownloadKind(processableCount, batchExportResults.length);
     if (downloadKind === 'none') {
       exportState = 'done';
       return;
@@ -572,10 +642,13 @@
         await cleanupTemporaryOutput();
         return;
       }
-      const entries = createBatchArchiveEntries(batchExportResults.map(({ item, file }) => ({
-        sourceName: item.file.name,
-        file,
-      })));
+      const resultsById = new Map(batchExportResults.map((result) => [result.item.id, result]));
+      const entries = batchExportQueue.reduce<Array<{ name: string; file: Blob }>>((archiveEntries, { id }) => {
+        const result = resultsById.get(id);
+        const name = batchArchiveNames[id];
+        if (result && name) archiveEntries.push({ name, file: result.file });
+        return archiveEntries;
+      }, []);
       const archive = await writeStoredZip(entries, temporaryOutput.handle, signal);
       if (attempt !== exportAttempt) {
         await cleanupTemporaryOutput();
@@ -585,8 +658,9 @@
       const archiveOutput = temporaryOutput;
       const videoOutputs = batchExportResults.map(({ output }) => output);
       temporaryOutput = undefined;
-      batchExportResults = [];
-      saveArchive(archive, [archiveOutput, ...videoOutputs]);
+      const hasRetryableErrors = retryableBatchExportItems(batchExportQueue).length > 0;
+      if (!hasRetryableErrors) batchExportResults = [];
+      saveArchive(archive, hasRetryableErrors ? [archiveOutput] : [archiveOutput, ...videoOutputs]);
       exportState = 'done';
     } catch (cause) {
       if (attempt !== exportAttempt) return;
@@ -643,7 +717,7 @@
         if (attempt !== exportAttempt) return finish({ type: 'cancelled' });
         if (data.type === 'progress') {
           batchExportQueue = updateBatchExportProgress(batchExportQueue, item.id, data.completed);
-          progress = batchExportProgress(batchExportQueue);
+          progress = currentBatchExportAttemptProgress(batchExportQueue);
         } else if (data.type === 'complete') {
           temporaryOutput = undefined;
           finish({ type: 'complete', file: data.file, output });
@@ -668,6 +742,9 @@
       output ? [output] : [],
     );
   }
+  function currentBatchExportAttemptProgress(queue: readonly BatchExportItem[]) {
+    return batchExportProgress(queue.filter(({ id }) => batchExportAttemptItemIds.includes(id)));
+  }
   function saveArchive(result: File, outputs: TemporaryOutput[]) {
     download(result, 'klex-logo-batch.zip', outputs);
   }
@@ -690,6 +767,8 @@
     cancelWorkerTask?.(); cancelWorkerTask = undefined;
     worker?.terminate(); worker = undefined;
     stopTimer(); exportState = 'idle'; progress = 0; batchExportQueue = [];
+    batchExportAttemptKind = 'initial'; batchExportAttemptItemIds = [];
+    batchArchiveNames = {}; batchExportPreset = undefined;
     void cleanupTemporaryOutput();
     void cleanupBatchExportResults();
   }
@@ -732,6 +811,30 @@
     batchStorageState = { status: 'checking' };
     try {
       const capacity = await checkBatchExportStorage(videos, nextPreset);
+      if (attempt !== batchStorageCheckAttempt) return;
+      batchStorageState = { status: capacity.hasCapacity ? 'available' : 'insufficient', ...capacity };
+      return capacity;
+    } catch (cause) {
+      if (attempt !== batchStorageCheckAttempt) return;
+      batchStorageState = { status: 'unavailable' };
+      if (!(cause instanceof BatchExportStorageUnavailableError)) error = errorKey('generic');
+    }
+  }
+  async function refreshBatchRetryStorage(
+    videos: readonly SourceMetadata[],
+    nextPreset: ExportPreset,
+    totalVideoCount: number,
+  ): Promise<BatchExportStorageCapacity | undefined> {
+    const attempt = ++batchStorageCheckAttempt;
+    batchStorageState = { status: 'checking' };
+    try {
+      const retainedBytes = batchExportResults.reduce((total, { file }) => total + file.size, 0);
+      const capacity = await checkBatchRetryStorage(
+        videos,
+        nextPreset,
+        retainedBytes,
+        totalVideoCount,
+      );
       if (attempt !== batchStorageCheckAttempt) return;
       batchStorageState = { status: capacity.hasCapacity ? 'available' : 'insufficient', ...capacity };
       return capacity;
@@ -972,6 +1075,9 @@
                 {$t(batchResultSummary.ready === 0 ? 'logo.exportNone' : batchResultSummary.error > 0 || batchResultSummary.skipped > 0 ? 'logo.exportPartial' : supportedBatch.length > 1 ? 'logo.exportComplete' : 'export.saved')}
               </div>
               <BatchExportProgress items={batchExportQueue} showSummary />
+              {#if batchResultSummary.error > 0}
+                <button class="retry" onclick={retryFailedLogoBatch}>{$t('logo.retryFailed')}</button>
+              {/if}
             {:else}
               <div class="notice success">{$t('export.saved')}</div>
             {/if}
@@ -994,4 +1100,4 @@
   </div>
 {/if}
 
-{#if exportState === 'exporting'}<div class="progress-overlay" role="dialog" aria-modal="true" aria-label={$t('progress.label')}><section class="progress-card" class:batch-progress-card={workflow === 'logo'}><div class="render-orbit"><span></span><b>{progress}%</b></div><span class="eyebrow">{$t(workflow === 'logo' ? 'logo.exportOverall' : 'progress.rendering')}</span><h2>{$t('progress.composing')}</h2><p>{$t('progress.elapsed', { seconds: elapsed })}</p>{#if workflow === 'logo'}<BatchExportProgress items={batchExportQueue} />{/if}<progress value={progress} max="100"></progress><button class="secondary" onclick={cancelExport}>{$t('common.cancel')}</button></section></div>{/if}
+{#if exportState === 'exporting'}<div class="progress-overlay" role="dialog" aria-modal="true" aria-label={$t('progress.label')}><section class="progress-card" class:batch-progress-card={workflow === 'logo'}><div class="render-orbit"><span></span><b>{progress}%</b></div><span class="eyebrow">{$t(workflow === 'logo' ? batchExportAttemptKind === 'retry' ? 'logo.retryOverall' : 'logo.exportOverall' : 'progress.rendering')}</span><h2>{$t('progress.composing')}</h2><p>{$t('progress.elapsed', { seconds: elapsed })}</p>{#if workflow === 'logo'}<BatchExportProgress items={batchExportAttemptQueue} queueLabel={batchExportAttemptKind === 'retry' ? 'logo.retryQueue' : 'logo.exportQueue'} />{/if}<progress value={progress} max="100"></progress><button class="secondary" onclick={cancelExport}>{$t('common.cancel')}</button></section></div>{/if}

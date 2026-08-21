@@ -8,6 +8,8 @@ import {
   createBatchExportQueue,
   failBatchExportItem,
   processableBatchExportItems,
+  retryFailedBatchExportItems,
+  retryableBatchExportItems,
   resolveBatchExportLogoSource,
   startNextBatchExportItem,
   updateBatchExportProgress,
@@ -80,6 +82,40 @@ describe('Batch export queue', () => {
 
     expect(batchExportSummary(queue)).toEqual({ ready: 1, error: 1, skipped: 1 });
     expect(batchExportProgress(queue)).toBe(100);
+  });
+
+  it('queues only failed exports for retry and keeps completed and skipped items unchanged', () => {
+    let queue = createBatchExportQueue([
+      item('ready', 'supported', 30),
+      item('failed', 'supported', 90),
+      item('unsupported', 'error'),
+    ]);
+    queue = startNextBatchExportItem(queue);
+    queue = completeBatchExportItem(queue, 'ready');
+    queue = startNextBatchExportItem(queue);
+    queue = failBatchExportItem(queue, 'failed', 'decoder');
+
+    expect(retryableBatchExportItems(queue).map(({ id }) => id)).toEqual(['failed']);
+
+    const retry = retryFailedBatchExportItems(queue);
+    expect(retry).toEqual([
+      expect.objectContaining({ id: 'ready', status: 'ready', completed: 30 }),
+      expect.objectContaining({ id: 'failed', status: 'queued', completed: 0, error: undefined }),
+      expect.objectContaining({ id: 'unsupported', status: 'skipped', error: 'videoCodec' }),
+    ]);
+    expect(batchExportProgress(retry.filter(({ id }) => id === 'failed'))).toBe(0);
+  });
+
+  it('keeps an exact repeated failure retryable', () => {
+    let queue = createBatchExportQueue([item('failed', 'supported')]);
+    queue = startNextBatchExportItem(queue);
+    queue = failBatchExportItem(queue, 'failed', 'encoder');
+    queue = retryFailedBatchExportItems(queue);
+    queue = startNextBatchExportItem(queue);
+    queue = failBatchExportItem(queue, 'failed', 'storage');
+
+    expect(queue[0]).toMatchObject({ status: 'error', error: 'storage' });
+    expect(retryableBatchExportItems(queue).map(({ id }) => id)).toEqual(['failed']);
   });
 
   it('keeps ZIP delivery when only one of multiple processable videos succeeds', () => {

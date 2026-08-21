@@ -41,6 +41,19 @@ export function processableBatchExportItems(
   return queue.filter((item): item is ProcessableBatchExportItem => item.status === 'queued' && !!item.metadata);
 }
 
+export function retryableBatchExportItems(
+  queue: readonly BatchExportItem[],
+): ProcessableBatchExportItem[] {
+  return queue.filter((item): item is ProcessableBatchExportItem => item.status === 'error' && !!item.metadata);
+}
+
+/** Requeues only failed exports; validation failures remain skipped and ready outputs remain ready. */
+export function retryFailedBatchExportItems(queue: readonly BatchExportItem[]): BatchExportItem[] {
+  return queue.map((item) => item.status === 'error' && item.metadata
+    ? { ...item, status: 'queued', completed: 0, error: undefined }
+    : item);
+}
+
 /** Starts only the first queued video and never introduces a second active item. */
 export function startNextBatchExportItem(queue: readonly BatchExportItem[]): BatchExportItem[] {
   if (queue.some(({ status }) => status === 'processing')) return [...queue];
