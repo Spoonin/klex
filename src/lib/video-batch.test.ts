@@ -17,7 +17,7 @@ import {
 } from './video-batch';
 import { DEFAULT_LOGO_SETTINGS } from './logo';
 
-const metadata = { duration: 12, width: 1920, height: 1080, unsupportedAudio: false };
+const metadata = { duration: 12, width: 1920, height: 1080, unsupportedAudio: false, audioBitrate: 0 };
 
 describe('video Batch', () => {
   it('preserves addition order across selections without imposing a limit', () => {

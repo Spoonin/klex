@@ -16,6 +16,7 @@ const metadata = (duration: number) => ({
   width: 1920,
   height: 1080,
   unsupportedAudio: false,
+  audioBitrate: 0,
 });
 
 function item(id: string, status: VideoBatchItem['status'], duration = 10): VideoBatchItem {

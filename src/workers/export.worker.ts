@@ -11,7 +11,7 @@ import {
   Output,
   StreamTarget,
 } from 'mediabunny';
-import type { ExportPreset, ExportRequest, ValidateRequest, WorkerErrorCode, WorkerMessage } from '../lib/export-protocol';
+import { EXPORT_VIDEO_BITRATES, type ExportPreset, type ExportRequest, type ValidateRequest, type WorkerErrorCode, type WorkerMessage } from '../lib/export-protocol';
 import { isInTrimWindow } from '../lib/trim';
 import { createVideoRenderer, type VideoRenderer } from '../lib/video-renderer';
 
@@ -49,7 +49,18 @@ async function validateFile({ file, maxDuration }: ValidateRequest) {
     if (!duration || duration <= 0) throw new WorkerFailure('duration');
     if (maxDuration !== undefined && duration > maxDuration) throw new WorkerFailure('durationLimit');
     const supportedAudio = audioTrack ? await isAacLc(audioTrack) : true;
-    post({ type: 'validated', metadata: { duration, width, height, unsupportedAudio: !supportedAudio } });
+    const audioStats = audioTrack && supportedAudio ? await audioTrack.computePacketStats() : undefined;
+    const audioBitrate = audioStats?.averageBitrate ?? 0;
+    post({
+      type: 'validated',
+      metadata: {
+        duration,
+        width,
+        height,
+        unsupportedAudio: !supportedAudio,
+        audioBitrate: Number.isFinite(audioBitrate) ? audioBitrate : 0,
+      },
+    });
   } finally {
     input.dispose();
   }
@@ -194,7 +205,7 @@ async function exportFile({ file, preset, layers, logo, trim, output: outputHand
 }
 
 async function supportedEncoderConfig(width: number, height: number, preset: ExportPreset): Promise<VideoEncoderConfig> {
-  const bitrate = preset === 'high' ? 12_000_000 : preset === 'light' ? 4_000_000 : 8_000_000;
+  const bitrate = EXPORT_VIDEO_BITRATES[preset];
   for (const codec of codecs) {
     const config: VideoEncoderConfig = { codec, width, height, bitrate, framerate: 30, hardwareAcceleration: 'prefer-hardware' };
     if ((await VideoEncoder.isConfigSupported(config)).supported) return config;
