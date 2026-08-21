@@ -10,6 +10,10 @@ export type VideoBatchItem = {
   error?: WorkerErrorCode;
 };
 
+export type LogoBatchEditorTarget =
+  | { type: 'batch-default' }
+  | { type: 'video'; id: string };
+
 export function appendVideoBatch(
   batch: readonly VideoBatchItem[],
   files: Iterable<File>,
@@ -47,4 +51,18 @@ export function removeVideoBatchItem(batch: readonly VideoBatchItem[], id: strin
 
 export function supportedVideoBatchItems(batch: readonly VideoBatchItem[]) {
   return batch.filter((item) => item.status === 'supported' || item.status === 'warning');
+}
+
+/** Batch Default exists only when there are multiple videos that can be exported. */
+export function hasLogoBatchDefault(batch: readonly VideoBatchItem[]) {
+  return supportedVideoBatchItems(batch).length >= 2;
+}
+
+/** Opens a multi-video Batch on its common settings and a single video on that video. */
+export function initialLogoBatchEditorTarget(
+  batch: readonly VideoBatchItem[],
+): LogoBatchEditorTarget | undefined {
+  const supported = supportedVideoBatchItems(batch);
+  if (supported.length >= 2) return { type: 'batch-default' };
+  if (supported[0]) return { type: 'video', id: supported[0].id };
 }

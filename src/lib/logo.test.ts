@@ -103,6 +103,27 @@ describe('Logo', () => {
       .toEqual(logoPlacement(image, { width: 1080, height: 1920 }, settings));
   });
 
+  it('transfers Batch Default geometry by shortest-side fractions across frame shapes', () => {
+    const image = { width: 800, height: 400 };
+    const settings = {
+      anchor: 'top-left' as const, size: 0.2, safeMargin: 0.05, opacity: 0.8,
+      offsetX: 0.12, offsetY: 0.18,
+    };
+
+    for (const frame of [
+      { width: 1000, height: 1000 },
+      { width: 1080, height: 1920 },
+      { width: 1920, height: 1080 },
+    ]) {
+      const placement = logoPlacement(image, frame, settings);
+      const shortestSide = Math.min(frame.width, frame.height);
+
+      expect(placement.left * frame.width / shortestSide).toBeCloseTo(settings.offsetX);
+      expect(placement.top * frame.height / shortestSide).toBeCloseTo(settings.offsetY);
+      expect(placement.width * frame.width / shortestSide).toBeCloseTo(settings.size);
+    }
+  });
+
   it('calculates dynamic Size and Offset limits inside the Safe Margin', () => {
     const image = { width: 1000, height: 1000 };
     const frame = { width: 1000, height: 1000 };

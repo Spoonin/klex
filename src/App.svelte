@@ -12,11 +12,12 @@
   import { DEFAULT_LOGO_SETTINGS, LogoValidationError, fitLogoSettings, maximumLogoSize, validateLogoFile, type LogoSettings, type LogoSource } from './lib/logo';
   import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
-  import { appendVideoBatch, rejectVideoBatchItem, removeVideoBatchItem, supportedVideoBatchItems, validateVideoBatchItem, type VideoBatchItem } from './lib/video-batch';
+  import { appendVideoBatch, hasLogoBatchDefault, initialLogoBatchEditorTarget, rejectVideoBatchItem, removeVideoBatchItem, supportedVideoBatchItems, validateVideoBatchItem, type LogoBatchEditorTarget, type VideoBatchItem } from './lib/video-batch';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
   const MAX_CONCURRENT_VALIDATIONS = 2;
+  const BATCH_DEFAULT_FRAME = { width: 1000, height: 1000 } as const;
 
   let workflow: Workflow | null = null;
   let step: WorkflowStep = 1;
@@ -45,6 +46,7 @@
   let logoValidationAttempt = 0;
   let logoSettings: LogoSettings = { ...DEFAULT_LOGO_SETTINGS };
   let videoBatch: VideoBatchItem[] = [];
+  let logoBatchEditorTarget: LogoBatchEditorTarget | undefined;
   const validationWorkers = new Map<string, Worker>();
   let validationQueue: string[] = [];
 
@@ -56,6 +58,9 @@
   $: logoEditorReady = workflow === 'logo' && previewReady && !!file && !!logoSource && !!sourceMetadata;
   $: readyToExport = editorReady || logoEditorReady;
   $: supportedBatch = supportedVideoBatchItems(videoBatch);
+  $: batchDefaultAvailable = hasLogoBatchDefault(videoBatch);
+  $: editingBatchDefault = logoBatchEditorTarget?.type === 'batch-default';
+  $: logoEditorFrame = editingBatchDefault ? BATCH_DEFAULT_FRAME : sourceMetadata ?? BATCH_DEFAULT_FRAME;
   $: validatingVideoCount = videoBatch.filter(({ status }) => status === 'validating').length;
 
   function dispatch(action: EditorProjectAction) { project = updateEditorProject(project, action); }
@@ -109,7 +114,10 @@
       if (logoUrl) URL.revokeObjectURL(logoUrl);
       logoFile = next;
       logoMetadata = metadata;
-      if (sourceMetadata) logoSettings = fitLogoSettings(metadata, sourceMetadata, logoSettings);
+      if (sourceMetadata) {
+        const frame = editingBatchDefault ? BATCH_DEFAULT_FRAME : sourceMetadata;
+        logoSettings = fitLogoSettings(metadata, frame, logoSettings);
+      }
       logoUrl = URL.createObjectURL(next);
       logoState = 'ready';
       previewReady = false;
@@ -184,8 +192,20 @@
   function continueLogoBatch() {
     const first = supportedVideoBatchItems(videoBatch)[0];
     if (!first?.metadata || !logoSource) return;
+    const target = initialLogoBatchEditorTarget(videoBatch);
     useSource(first.file, first.metadata);
+    logoBatchEditorTarget = target;
+    if (target?.type === 'batch-default' && logoMetadata) {
+      logoSettings = fitLogoSettings(logoMetadata, BATCH_DEFAULT_FRAME, logoSettings);
+    }
     step = 2;
+  }
+
+  function showBatchDefault() {
+    if (!batchDefaultAvailable || !logoMetadata || editingBatchDefault) return;
+    logoBatchEditorTarget = { type: 'batch-default' };
+    logoSettings = fitLogoSettings(logoMetadata, BATCH_DEFAULT_FRAME, logoSettings);
+    previewReady = false;
   }
 
   function useSource(next: File, metadata: SourceMetadata) {
@@ -219,6 +239,7 @@
     validationWorkers.clear();
     validationQueue = [];
     videoBatch = [];
+    logoBatchEditorTarget = undefined;
   }
 
   function invalidateExport(terminateWorker = true) {
@@ -275,13 +296,13 @@
     dispatch({ type: 'layer-updated', patch });
   }
   function updateLogoSettings(patch: Partial<LogoSettings>) {
-    if (!logoMetadata || !sourceMetadata) return;
+    if (!logoMetadata) return;
     invalidateExport();
     const next = { ...logoSettings, ...patch };
     if (patch.size !== undefined) {
-      next.size = Math.min(patch.size, maximumLogoSize(logoMetadata, sourceMetadata, next));
+      next.size = Math.min(patch.size, maximumLogoSize(logoMetadata, logoEditorFrame, next));
     }
-    logoSettings = fitLogoSettings(logoMetadata, sourceMetadata, next);
+    logoSettings = fitLogoSettings(logoMetadata, logoEditorFrame, next);
   }
   function openExport() { if (readyToExport) { exportUnlocked = true; step = 3; } }
 
@@ -410,7 +431,7 @@
   <header class="app-header">
     <div class="header-context">
       <button class="brand" aria-label={$t('brand.home')} onclick={returnToWorkflowChoice}><span class="brand-mark">k</span><span><b>klex</b><small>{$t('brand.tagline')}</small></span></button>
-      {#if workflow && file}<div class="project-file"><span></span><p>{file.name}<small>{formatDuration(project.duration)} · {workflow === 'text' ? $t('layer.count', { count: project.layers.length }) : logoFile?.name}</small></p></div>{/if}
+      {#if workflow && file}<div class="project-file"><span></span><p>{workflow === 'logo' && step === 2 && editingBatchDefault ? $t('logo.batchDefault') : file.name}<small>{workflow === 'logo' && step === 2 && editingBatchDefault ? $t('logo.batchDefaultNotVideo') : `${formatDuration(project.duration)} · ${workflow === 'text' ? $t('layer.count', { count: project.layers.length }) : logoFile?.name}`}</small></p></div>{/if}
     </div>
     <div class="header-actions">
       <label class="language-picker"><span class="sr-only">{$t('language.label')}</span><select aria-label={$t('language.label')} value={$locale} onchange={chooseLocale}>{#each languages as language}<option value={language.code}>{language.name}</option>{/each}</select></label>
@@ -481,12 +502,20 @@
     </section>
   {:else if workflow === 'logo' && step === 2 && file && sourceUrl && sourceMetadata && logoSource && logoUrl}
     <section class="logo-editor-step step-view">
-      <div class="step-title"><div><span class="eyebrow">{$t('logo.previewEyebrow')}</span><h1>{$t('logo.previewTitle')}</h1><p>{$t('logo.previewDescription')}</p></div></div>
+      <div class="step-title"><div><span class="eyebrow">{$t('logo.previewEyebrow')}</span><h1>{$t(editingBatchDefault ? 'logo.batchDefault' : 'logo.previewTitle')}</h1><p>{$t(editingBatchDefault ? 'logo.batchDefaultDescription' : 'logo.previewDescription')}</p></div></div>
+      {#if batchDefaultAvailable}
+        <nav class="logo-preview-targets" aria-label={$t('logo.previewTarget')}>
+          <button class:active={editingBatchDefault} aria-pressed={editingBatchDefault} onclick={showBatchDefault}>
+            <span aria-hidden="true">◇</span>
+            <span><strong>{$t('logo.batchDefault')}</strong><small>{$t('logo.returnToBatchDefault')}</small></span>
+          </button>
+        </nav>
+      {/if}
       <div class="logo-workspace">
-        {#key `${sourceUrl}:${logoUrl}`}
-          <LogoStage {sourceUrl} {logoUrl} videoWidth={sourceMetadata.width} videoHeight={sourceMetadata.height} logo={logoSource} onReady={() => previewReady = true} onChange={updateLogoSettings} />
+        {#key `${sourceUrl}:${logoUrl}:${logoBatchEditorTarget?.type}`}
+          <LogoStage {sourceUrl} {logoUrl} videoWidth={logoEditorFrame.width} videoHeight={logoEditorFrame.height} logo={logoSource} batchDefault={editingBatchDefault} onReady={() => previewReady = true} onChange={updateLogoSettings} />
         {/key}
-        <LogoInspector image={logoSource} frame={sourceMetadata} settings={logoSettings} onChange={updateLogoSettings} />
+        <LogoInspector image={logoSource} frame={logoEditorFrame} settings={logoSettings} onChange={updateLogoSettings} />
       </div>
       <footer class="step-actions"><button class="secondary" onclick={() => navigate(1)}>← {$t('logo.replaceFiles')}</button><div><span class:ready={logoEditorReady}>{$t(logoEditorReady ? 'editor.previewReady' : 'editor.previewPreparing')}</span></div></footer>
     </section>

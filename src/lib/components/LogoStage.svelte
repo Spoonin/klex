@@ -9,16 +9,18 @@
   export let logo: LogoSource;
   export let onReady: () => void;
   export let onChange: (patch: Partial<LogoSettings>) => void;
+  export let batchDefault = false;
 
   const SNAP_DISTANCE_PX = 10;
   let stage: HTMLElement;
   let logoElement: HTMLImageElement;
-  let videoLoaded = false;
+  let videoLoaded = batchDefault;
   let logoLoaded = false;
   let readySent = false;
   let drag: { pointerId: number; grabX: number; grabY: number } | undefined;
   $: placement = logoPlacement(logo, { width: videoWidth, height: videoHeight }, logo.settings);
   $: safeArea = logoSafeArea({ width: videoWidth, height: videoHeight }, logo.settings.safeMargin);
+  $: if (batchDefault) videoLoaded = true;
   $: if (videoLoaded && logoLoaded && !readySent) {
     readySent = true;
     onReady();
@@ -58,18 +60,28 @@
 </script>
 
 <section class="preview-panel logo-preview" aria-label={$t('stage.preview')}>
+  {#if batchDefault}
+    <div class="batch-default-identity">
+      <strong>{$t('logo.batchDefault')}</strong>
+      <span>{$t('logo.batchDefaultNotVideo')}</span>
+    </div>
+  {/if}
   <div
     bind:this={stage}
     class="stage logo-stage"
     style={`aspect-ratio:${videoWidth}/${videoHeight};width:min(100%,calc(68vh * ${videoWidth / videoHeight}))`}
   >
-    <video
-      src={sourceUrl}
-      controls
-      playsinline
-      preload="metadata"
-      onloadeddata={() => videoLoaded = true}
-    ><track kind="captions" /></video>
+    {#if batchDefault}
+      <div class="batch-default-surface" aria-hidden="true"></div>
+    {:else}
+      <video
+        src={sourceUrl}
+        controls
+        playsinline
+        preload="metadata"
+        onloadeddata={() => videoLoaded = true}
+      ><track kind="captions" /></video>
+    {/if}
     <div
       class="safe-area"
       aria-hidden="true"

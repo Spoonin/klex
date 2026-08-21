@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendVideoBatch,
+  hasLogoBatchDefault,
+  initialLogoBatchEditorTarget,
   rejectVideoBatchItem,
   removeVideoBatchItem,
   supportedVideoBatchItems,
@@ -46,5 +48,28 @@ describe('video Batch', () => {
     );
 
     expect(removeVideoBatchItem(batch, '2').map(({ file }) => file.name)).toEqual(['one.mp4', 'three.mp4']);
+  });
+
+  it('opens two or more supported videos on Batch Default', () => {
+    let id = 0;
+    let batch = appendVideoBatch(
+      [],
+      [new File([], 'one.mp4'), new File([], 'broken.mp4'), new File([], 'two.mov')],
+      () => String(++id),
+    );
+    batch = validateVideoBatchItem(batch, '1', metadata);
+    batch = rejectVideoBatchItem(batch, '2', 'videoCodec');
+    batch = validateVideoBatchItem(batch, '3', { ...metadata, unsupportedAudio: true });
+
+    expect(hasLogoBatchDefault(batch)).toBe(true);
+    expect(initialLogoBatchEditorTarget(batch)).toEqual({ type: 'batch-default' });
+  });
+
+  it('opens one supported video directly without creating Batch Default', () => {
+    let batch = appendVideoBatch([], [new File([], 'only.mp4')], () => 'only');
+    batch = validateVideoBatchItem(batch, 'only', metadata);
+
+    expect(hasLogoBatchDefault(batch)).toBe(false);
+    expect(initialLogoBatchEditorTarget(batch)).toEqual({ type: 'video', id: 'only' });
   });
 });
