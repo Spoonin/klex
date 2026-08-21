@@ -7,12 +7,13 @@
   import VideoBatchList from './lib/components/VideoBatchList.svelte';
   import VideoStage from './lib/components/VideoStage.svelte';
   import { canExportProject, createEditorProject, getActiveLayer, updateEditorProject, type EditorProjectAction } from './lib/editor-project';
+  import { createBatchArchiveEntries, writeStoredZip } from './lib/batch-archive';
   import { batchExportProgress, completeBatchExportItem, createBatchExportQueue, createBatchExportRequest, resolveBatchExportLogoSource, startNextBatchExportItem, updateBatchExportProgress, type BatchExportItem } from './lib/batch-export';
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
   import { DEFAULT_LOGO_SETTINGS, LogoValidationError, fitLogoSettings, maximumLogoSize, validateLogoFile, type LogoSettings, type LogoSource } from './lib/logo';
-  import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
+  import { createTemporaryArchive, createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
   import { appendVideoBatch, fittedLogoSettingKeys, hasLogoBatchDefault, initialLogoBatchEditorTarget, rejectVideoBatchItem, removeVideoBatchItem, resetVideoLogoOverride, resetVideoLogoOverrideProperty, resolveVideoLogoSettings, seekVideoBatchItem, supportedVideoBatchItems, updateVideoLogoOverride, validateVideoBatchItem, videoBatchPlayhead, type LogoBatchEditorTarget, type LogoSettingKey, type VideoBatchItem, type VideoBatchPlayheads, type VideoLogoOverrides } from './lib/video-batch';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
@@ -43,6 +44,7 @@
   let temporaryOutput: TemporaryOutput | undefined;
   let batchExportQueue: BatchExportItem[] = [];
   let batchExportResults: BatchExportResult[] = [];
+  let archiveAbortController: AbortController | undefined;
   let cancelWorkerTask: (() => void) | undefined;
   let exportAttempt = 0;
   let logoFile: File | null = null;
@@ -290,6 +292,8 @@
 
   function invalidateExport(terminateWorker = true) {
     exportAttempt += 1;
+    archiveAbortController?.abort();
+    archiveAbortController = undefined;
     if (terminateWorker) {
       cancelWorkerTask?.();
       cancelWorkerTask = undefined;
@@ -520,11 +524,49 @@
 
     stopTimer();
     progress = 100;
-    exportState = 'done';
     if (batchExportResults.length === 1) {
       const [result] = batchExportResults;
       batchExportResults = [];
       save(result.file, result.output, result.item.file);
+      exportState = 'done';
+      return;
+    }
+    await saveBatchArchive(attempt);
+  }
+
+  async function saveBatchArchive(attempt: number) {
+    archiveAbortController = new AbortController();
+    const signal = archiveAbortController.signal;
+    try {
+      temporaryOutput = await createTemporaryArchive();
+      if (attempt !== exportAttempt) {
+        await cleanupTemporaryOutput();
+        return;
+      }
+      const entries = createBatchArchiveEntries(batchExportResults.map(({ item, file }) => ({
+        sourceName: item.file.name,
+        file,
+      })));
+      const archive = await writeStoredZip(entries, temporaryOutput.handle, signal);
+      if (attempt !== exportAttempt) {
+        await cleanupTemporaryOutput();
+        await cleanupBatchExportResults();
+        return;
+      }
+      const archiveOutput = temporaryOutput;
+      const videoOutputs = batchExportResults.map(({ output }) => output);
+      temporaryOutput = undefined;
+      batchExportResults = [];
+      saveArchive(archive, [archiveOutput, ...videoOutputs]);
+      exportState = 'done';
+    } catch (cause) {
+      if (attempt !== exportAttempt) return;
+      error = errorKey(cause instanceof TemporaryStorageUnavailableError ? 'storage' : 'generic');
+      exportState = 'error';
+      await cleanupTemporaryOutput();
+      await cleanupBatchExportResults();
+    } finally {
+      if (archiveAbortController?.signal === signal) archiveAbortController = undefined;
     }
   }
 
@@ -591,19 +633,31 @@
   }
 
   function save(result: File, output: TemporaryOutput | undefined, source: File | null) {
+    download(
+      result,
+      `${source?.name.replace(/\.[^.]+$/, '') ?? 'klex-export'}-klex.mp4`,
+      output ? [output] : [],
+    );
+  }
+  function saveArchive(result: File, outputs: TemporaryOutput[]) {
+    download(result, 'klex-logo-batch.zip', outputs);
+  }
+  function download(result: File, name: string, outputs: TemporaryOutput[]) {
     const url = URL.createObjectURL(result);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `${source?.name.replace(/\.[^.]+$/, '') ?? 'klex-export'}-klex.mp4`;
+    anchor.download = name;
     anchor.click();
     setTimeout(() => {
       URL.revokeObjectURL(url);
-      void output?.dispose().catch(() => { error = errorKey('storage'); });
+      void Promise.all(outputs.map(({ dispose }) => dispose())).catch(() => { error = errorKey('storage'); });
     }, 1000);
   }
   function stopTimer() { if (exportTimer) clearInterval(exportTimer); exportTimer = undefined; }
   function cancelExport() {
     exportAttempt += 1;
+    archiveAbortController?.abort();
+    archiveAbortController = undefined;
     cancelWorkerTask?.(); cancelWorkerTask = undefined;
     worker?.terminate(); worker = undefined;
     stopTimer(); exportState = 'idle'; progress = 0; batchExportQueue = [];

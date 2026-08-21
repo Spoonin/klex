@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTemporaryOutput, TemporaryStorageUnavailableError } from './temporary-output';
+import { createTemporaryArchive, createTemporaryOutput, TemporaryStorageUnavailableError } from './temporary-output';
 
 describe('temporary export output', () => {
   it('reports a browser capability error when OPFS is unavailable', async () => {
@@ -45,5 +45,18 @@ describe('temporary export output', () => {
     await output.dispose();
 
     expect(removeEntry).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates ZIP archives in the same temporary browser storage', async () => {
+    const getFileHandle = vi.fn().mockResolvedValue({ kind: 'file', name: 'archive-batch.zip' });
+    const storage = {
+      getDirectory: vi.fn().mockResolvedValue({
+        getDirectoryHandle: vi.fn().mockResolvedValue({ getFileHandle, removeEntry: vi.fn() }),
+      }),
+    } as unknown as Pick<StorageManager, 'getDirectory'>;
+
+    await createTemporaryArchive(storage, 'batch');
+
+    expect(getFileHandle).toHaveBeenCalledWith('archive-batch.zip', { create: true });
   });
 });

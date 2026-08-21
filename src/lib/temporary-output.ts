@@ -17,6 +17,22 @@ export async function createTemporaryOutput(
   storage: TemporaryStorage | undefined = typeof navigator === 'undefined' ? undefined : navigator.storage,
   id: string = crypto.randomUUID(),
 ): Promise<TemporaryOutput> {
+  return createTemporaryFile('export', 'mp4', storage, id);
+}
+
+export async function createTemporaryArchive(
+  storage: TemporaryStorage | undefined = typeof navigator === 'undefined' ? undefined : navigator.storage,
+  id: string = crypto.randomUUID(),
+): Promise<TemporaryOutput> {
+  return createTemporaryFile('archive', 'zip', storage, id);
+}
+
+async function createTemporaryFile(
+  prefix: string,
+  extension: string,
+  storage: TemporaryStorage | undefined,
+  id: string,
+): Promise<TemporaryOutput> {
   if (!storage || typeof storage.getDirectory !== 'function') {
     throw new TemporaryStorageUnavailableError();
   }
@@ -30,7 +46,7 @@ export async function createTemporaryOutput(
 
   let directory: FileSystemDirectoryHandle;
   let handle: FileSystemFileHandle;
-  const name = `export-${id}.mp4`;
+  const name = `${prefix}-${id}.${extension}`;
   try {
     directory = await root.getDirectoryHandle(OUTPUT_DIRECTORY, { create: true });
     handle = await directory.getFileHandle(name, { create: true });
