@@ -12,7 +12,7 @@
   import { DEFAULT_LOGO_SETTINGS, LogoValidationError, fitLogoSettings, maximumLogoSize, validateLogoFile, type LogoSettings, type LogoSource } from './lib/logo';
   import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
-  import { appendVideoBatch, hasLogoBatchDefault, initialLogoBatchEditorTarget, rejectVideoBatchItem, removeVideoBatchItem, supportedVideoBatchItems, validateVideoBatchItem, type LogoBatchEditorTarget, type VideoBatchItem } from './lib/video-batch';
+  import { appendVideoBatch, hasLogoBatchDefault, initialLogoBatchEditorTarget, rejectVideoBatchItem, removeVideoBatchItem, seekVideoBatchItem, supportedVideoBatchItems, validateVideoBatchItem, videoBatchPlayhead, type LogoBatchEditorTarget, type VideoBatchItem, type VideoBatchPlayheads } from './lib/video-batch';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
@@ -47,20 +47,31 @@
   let logoSettings: LogoSettings = { ...DEFAULT_LOGO_SETTINGS };
   let videoBatch: VideoBatchItem[] = [];
   let logoBatchEditorTarget: LogoBatchEditorTarget | undefined;
+  let videoBatchPlayheads: VideoBatchPlayheads = {};
   const validationWorkers = new Map<string, Worker>();
   let validationQueue: string[] = [];
 
   $: activeLayer = getActiveLayer(project);
-  $: logoSource = logoFile && logoMetadata
-    ? { file: logoFile, ...logoMetadata, settings: logoSettings } satisfies LogoSource
-    : undefined;
   $: editorReady = workflow === 'text' && previewReady && !trimRequired && canExportProject(project);
   $: logoEditorReady = workflow === 'logo' && previewReady && !!file && !!logoSource && !!sourceMetadata;
   $: readyToExport = editorReady || logoEditorReady;
   $: supportedBatch = supportedVideoBatchItems(videoBatch);
   $: batchDefaultAvailable = hasLogoBatchDefault(videoBatch);
   $: editingBatchDefault = logoBatchEditorTarget?.type === 'batch-default';
-  $: logoEditorFrame = editingBatchDefault ? BATCH_DEFAULT_FRAME : sourceMetadata ?? BATCH_DEFAULT_FRAME;
+  $: selectedBatchItemId = logoBatchEditorTarget?.type === 'video' ? logoBatchEditorTarget.id : undefined;
+  $: selectedBatchItem = videoBatch.find(({ id }) => id === selectedBatchItemId);
+  $: logoEditorFrame = editingBatchDefault
+    ? BATCH_DEFAULT_FRAME
+    : selectedBatchItem?.metadata ?? sourceMetadata ?? BATCH_DEFAULT_FRAME;
+  $: logoEditorSettings = logoMetadata
+    ? fitLogoSettings(logoMetadata, logoEditorFrame, logoSettings)
+    : logoSettings;
+  $: logoSource = logoFile && logoMetadata
+    ? { file: logoFile, ...logoMetadata, settings: logoEditorSettings } satisfies LogoSource
+    : undefined;
+  $: logoPreviewPlayhead = selectedBatchItem?.metadata
+    ? videoBatchPlayhead(videoBatchPlayheads, selectedBatchItem.id, selectedBatchItem.metadata.duration)
+    : 0;
   $: validatingVideoCount = videoBatch.filter(({ status }) => status === 'validating').length;
 
   function dispatch(action: EditorProjectAction) { project = updateEditorProject(project, action); }
@@ -114,10 +125,6 @@
       if (logoUrl) URL.revokeObjectURL(logoUrl);
       logoFile = next;
       logoMetadata = metadata;
-      if (sourceMetadata) {
-        const frame = editingBatchDefault ? BATCH_DEFAULT_FRAME : sourceMetadata;
-        logoSettings = fitLogoSettings(metadata, frame, logoSettings);
-      }
       logoUrl = URL.createObjectURL(next);
       logoState = 'ready';
       previewReady = false;
@@ -195,17 +202,34 @@
     const target = initialLogoBatchEditorTarget(videoBatch);
     useSource(first.file, first.metadata);
     logoBatchEditorTarget = target;
-    if (target?.type === 'batch-default' && logoMetadata) {
-      logoSettings = fitLogoSettings(logoMetadata, BATCH_DEFAULT_FRAME, logoSettings);
-    }
     step = 2;
   }
 
   function showBatchDefault() {
     if (!batchDefaultAvailable || !logoMetadata || editingBatchDefault) return;
     logoBatchEditorTarget = { type: 'batch-default' };
-    logoSettings = fitLogoSettings(logoMetadata, BATCH_DEFAULT_FRAME, logoSettings);
     previewReady = false;
+  }
+
+  function showBatchVideo(item: VideoBatchItem) {
+    if (item.status === 'validating' || logoBatchEditorTarget?.type === 'video' && logoBatchEditorTarget.id === item.id) return;
+    logoBatchEditorTarget = { type: 'video', id: item.id };
+    previewReady = false;
+    if (!item.metadata) return;
+    useSource(item.file, item.metadata);
+    const playhead = videoBatchPlayhead(videoBatchPlayheads, item.id, item.metadata.duration);
+    project = updateEditorProject(project, { type: 'seeked', time: playhead });
+  }
+
+  function seekBatchVideo(time: number) {
+    if (!selectedBatchItem?.metadata) return;
+    videoBatchPlayheads = seekVideoBatchItem(
+      videoBatchPlayheads,
+      selectedBatchItem.id,
+      time,
+      selectedBatchItem.metadata.duration,
+    );
+    project = updateEditorProject(project, { type: 'seeked', time });
   }
 
   function useSource(next: File, metadata: SourceMetadata) {
@@ -213,7 +237,6 @@
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     file = next;
     sourceMetadata = metadata;
-    if (logoMetadata) logoSettings = fitLogoSettings(logoMetadata, metadata, logoSettings);
     sourceUrl = URL.createObjectURL(next);
     unsupportedAudio = metadata.unsupportedAudio;
     project = updateEditorProject(project, { type: 'source-loaded', duration: metadata.duration });
@@ -240,6 +263,7 @@
     validationQueue = [];
     videoBatch = [];
     logoBatchEditorTarget = undefined;
+    videoBatchPlayheads = {};
   }
 
   function invalidateExport(terminateWorker = true) {
@@ -298,7 +322,7 @@
   function updateLogoSettings(patch: Partial<LogoSettings>) {
     if (!logoMetadata) return;
     invalidateExport();
-    const next = { ...logoSettings, ...patch };
+    const next = { ...logoEditorSettings, ...patch };
     if (patch.size !== undefined) {
       next.size = Math.min(patch.size, maximumLogoSize(logoMetadata, logoEditorFrame, next));
     }
@@ -431,7 +455,7 @@
   <header class="app-header">
     <div class="header-context">
       <button class="brand" aria-label={$t('brand.home')} onclick={returnToWorkflowChoice}><span class="brand-mark">k</span><span><b>klex</b><small>{$t('brand.tagline')}</small></span></button>
-      {#if workflow && file}<div class="project-file"><span></span><p>{workflow === 'logo' && step === 2 && editingBatchDefault ? $t('logo.batchDefault') : file.name}<small>{workflow === 'logo' && step === 2 && editingBatchDefault ? $t('logo.batchDefaultNotVideo') : `${formatDuration(project.duration)} · ${workflow === 'text' ? $t('layer.count', { count: project.layers.length }) : logoFile?.name}`}</small></p></div>{/if}
+      {#if workflow && file}<div class="project-file"><span></span><p>{workflow === 'logo' && step === 2 ? editingBatchDefault ? $t('logo.batchDefault') : selectedBatchItem?.file.name ?? file.name : file.name}<small>{workflow === 'logo' && step === 2 && editingBatchDefault ? $t('logo.batchDefaultNotVideo') : `${formatDuration(selectedBatchItem?.metadata?.duration ?? project.duration)} · ${workflow === 'text' ? $t('layer.count', { count: project.layers.length }) : logoFile?.name}`}</small></p></div>{/if}
     </div>
     <div class="header-actions">
       <label class="language-picker"><span class="sr-only">{$t('language.label')}</span><select aria-label={$t('language.label')} value={$locale} onchange={chooseLocale}>{#each languages as language}<option value={language.code}>{language.name}</option>{/each}</select></label>
@@ -500,22 +524,52 @@
       <div class="privacy-note"><span>✦</span><p><strong>{$t('privacy.title')}</strong><br />{$t('privacy.body')}</p></div>
       <button class="secondary workflow-back" onclick={returnToWorkflowChoice}>← {$t('brand.home')}</button>
     </section>
-  {:else if workflow === 'logo' && step === 2 && file && sourceUrl && sourceMetadata && logoSource && logoUrl}
+  {:else if workflow === 'logo' && step === 2 && logoBatchEditorTarget && logoSource && logoUrl}
     <section class="logo-editor-step step-view">
       <div class="step-title"><div><span class="eyebrow">{$t('logo.previewEyebrow')}</span><h1>{$t(editingBatchDefault ? 'logo.batchDefault' : 'logo.previewTitle')}</h1><p>{$t(editingBatchDefault ? 'logo.batchDefaultDescription' : 'logo.previewDescription')}</p></div></div>
-      {#if batchDefaultAvailable}
+      {#if videoBatch.length > 1}
         <nav class="logo-preview-targets" aria-label={$t('logo.previewTarget')}>
-          <button class:active={editingBatchDefault} aria-pressed={editingBatchDefault} onclick={showBatchDefault}>
-            <span aria-hidden="true">◇</span>
-            <span><strong>{$t('logo.batchDefault')}</strong><small>{$t('logo.returnToBatchDefault')}</small></span>
-          </button>
+          {#if batchDefaultAvailable}
+            <button class:active={editingBatchDefault} aria-pressed={editingBatchDefault} onclick={showBatchDefault}>
+              <span aria-hidden="true">◇</span>
+              <span><strong>{$t('logo.batchDefault')}</strong><small>{$t('logo.returnToBatchDefault')}</small></span>
+            </button>
+          {/if}
+          {#each videoBatch as item, index (item.id)}
+            <button
+              class:active={selectedBatchItem?.id === item.id}
+              class:error={item.status === 'error'}
+              class:warning={item.status === 'warning'}
+              aria-pressed={selectedBatchItem?.id === item.id}
+              disabled={item.status === 'validating'}
+              onclick={() => showBatchVideo(item)}
+            >
+              <span aria-hidden="true">{index + 1}</span>
+              <span>
+                <strong>{item.file.name}</strong>
+                <small>{item.metadata ? `${formatDuration(item.metadata.duration)} · ${item.metadata.width}×${item.metadata.height}` : item.error ? $t(errorKey(item.error), { seconds: MAX_TRIM_DURATION }) : $t('logo.batchChecking')}</small>
+              </span>
+            </button>
+          {/each}
         </nav>
       {/if}
       <div class="logo-workspace">
-        {#key `${sourceUrl}:${logoUrl}:${logoBatchEditorTarget?.type}`}
-          <LogoStage {sourceUrl} {logoUrl} videoWidth={logoEditorFrame.width} videoHeight={logoEditorFrame.height} logo={logoSource} batchDefault={editingBatchDefault} onReady={() => previewReady = true} onChange={updateLogoSettings} />
-        {/key}
-        <LogoInspector image={logoSource} frame={logoEditorFrame} settings={logoSettings} onChange={updateLogoSettings} />
+        {#if editingBatchDefault}
+          {#key `batch-default:${logoUrl}`}
+            <LogoStage {sourceUrl} {logoUrl} videoWidth={logoEditorFrame.width} videoHeight={logoEditorFrame.height} logo={logoSource} batchDefault onReady={() => previewReady = true} onChange={updateLogoSettings} />
+          {/key}
+        {:else if selectedBatchItem?.metadata && sourceUrl}
+          {#key `${selectedBatchItem.id}:${sourceUrl}:${logoUrl}`}
+            <LogoStage {sourceUrl} {logoUrl} videoWidth={logoEditorFrame.width} videoHeight={logoEditorFrame.height} duration={selectedBatchItem.metadata.duration} playhead={logoPreviewPlayhead} logo={logoSource} onSeek={seekBatchVideo} onReady={() => previewReady = true} onChange={updateLogoSettings} />
+          {/key}
+        {:else if selectedBatchItem}
+          <section class="preview-panel logo-preview logo-preview-error" role="alert">
+            <span aria-hidden="true">!</span>
+            <strong>{$t(`logo.batchStatus.${selectedBatchItem.status}` as MessageKey)}</strong>
+            <p>{selectedBatchItem.error ? $t(errorKey(selectedBatchItem.error), { seconds: MAX_TRIM_DURATION }) : $t('logo.batchChecking')}</p>
+          </section>
+        {/if}
+        <LogoInspector image={logoSource} frame={logoEditorFrame} settings={logoEditorSettings} onChange={updateLogoSettings} />
       </div>
       <footer class="step-actions"><button class="secondary" onclick={() => navigate(1)}>← {$t('logo.replaceFiles')}</button><div><span class:ready={logoEditorReady}>{$t(logoEditorReady ? 'editor.previewReady' : 'editor.previewPreparing')}</span></div></footer>
     </section>

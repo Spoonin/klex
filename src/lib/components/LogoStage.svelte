@@ -6,16 +6,21 @@
   export let logoUrl: string;
   export let videoWidth: number;
   export let videoHeight: number;
+  export let duration = 0;
+  export let playhead = 0;
   export let logo: LogoSource;
   export let onReady: () => void;
+  export let onSeek: (time: number) => void = () => {};
   export let onChange: (patch: Partial<LogoSettings>) => void;
   export let batchDefault = false;
 
   const SNAP_DISTANCE_PX = 10;
   let stage: HTMLElement;
+  let video: HTMLVideoElement;
   let logoElement: HTMLImageElement;
   let videoLoaded = batchDefault;
   let logoLoaded = false;
+  let playing = false;
   let readySent = false;
   let drag: { pointerId: number; grabX: number; grabY: number } | undefined;
   $: placement = logoPlacement(logo, { width: videoWidth, height: videoHeight }, logo.settings);
@@ -24,6 +29,42 @@
   $: if (videoLoaded && logoLoaded && !readySent) {
     readySent = true;
     onReady();
+  }
+
+  $: if (video && !batchDefault && Math.abs(video.currentTime - playhead) > 0.08) {
+    video.currentTime = clampTime(playhead);
+  }
+
+  async function togglePlayback() {
+    if (video.paused) {
+      if (video.currentTime >= duration - 0.05) seek(0);
+      try {
+        await video.play();
+      } catch {
+        playing = false;
+      }
+    } else {
+      video.pause();
+    }
+  }
+
+  function loadVideo() {
+    video.currentTime = clampTime(playhead);
+    videoLoaded = true;
+  }
+
+  function syncTime() {
+    onSeek(clampTime(video.currentTime));
+  }
+
+  function seek(time: number) {
+    const next = clampTime(time);
+    video.currentTime = next;
+    onSeek(next);
+  }
+
+  function clampTime(time: number) {
+    return Math.min(Math.max(0, duration), Math.max(0, Number.isFinite(time) ? time : 0));
   }
 
   function startDrag(event: PointerEvent) {
@@ -75,11 +116,14 @@
       <div class="batch-default-surface" aria-hidden="true"></div>
     {:else}
       <video
+        bind:this={video}
         src={sourceUrl}
-        controls
         playsinline
         preload="metadata"
-        onloadeddata={() => videoLoaded = true}
+        onloadeddata={loadVideo}
+        ontimeupdate={syncTime}
+        onplay={() => playing = true}
+        onpause={() => playing = false}
       ><track kind="captions" /></video>
     {/if}
     <div
@@ -109,4 +153,30 @@
       onlostpointercapture={endDrag}
     />
   </div>
+  {#if !batchDefault}
+    <div class="logo-timeline">
+      <div class="timeline-toolbar">
+        <button class="play" onclick={togglePlayback} aria-label={$t(playing ? 'stage.pause' : 'stage.play')}>{playing ? 'Ⅱ' : '▶'}</button>
+        <output>{formatTime(playhead)} <span>/ {formatTime(duration)}</span></output>
+      </div>
+      <input
+        class="scrub-range"
+        aria-label={$t('stage.currentTime')}
+        type="range"
+        min="0"
+        max={duration}
+        step="0.01"
+        value={playhead}
+        oninput={(event) => seek(Number(event.currentTarget.value))}
+      />
+    </div>
+  {/if}
 </section>
+
+<script lang="ts" context="module">
+  function formatTime(value: number) {
+    const minutes = Math.floor(value / 60);
+    const seconds = (value % 60).toFixed(1).padStart(4, '0');
+    return `${minutes}:${seconds}`;
+  }
+</script>

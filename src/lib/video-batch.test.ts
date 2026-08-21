@@ -5,8 +5,10 @@ import {
   initialLogoBatchEditorTarget,
   rejectVideoBatchItem,
   removeVideoBatchItem,
+  seekVideoBatchItem,
   supportedVideoBatchItems,
   validateVideoBatchItem,
+  videoBatchPlayhead,
 } from './video-batch';
 
 const metadata = { duration: 12, width: 1920, height: 1080, unsupportedAudio: false };
@@ -71,5 +73,21 @@ describe('video Batch', () => {
 
     expect(hasLogoBatchDefault(batch)).toBe(false);
     expect(initialLogoBatchEditorTarget(batch)).toEqual({ type: 'video', id: 'only' });
+  });
+
+  it('keeps an independent full-duration playhead for every video', () => {
+    let playheads = seekVideoBatchItem({}, 'one', 9.25, 12);
+    playheads = seekVideoBatchItem(playheads, 'two', 90, 60);
+
+    expect(videoBatchPlayhead(playheads, 'one', 12)).toBe(9.25);
+    expect(videoBatchPlayhead(playheads, 'two', 60)).toBe(60);
+    expect(videoBatchPlayhead(playheads, 'unseen', 20)).toBe(0);
+  });
+
+  it('normalises invalid preview positions without changing other videos', () => {
+    const playheads = seekVideoBatchItem({ one: 4 }, 'two', Number.NaN, 10);
+
+    expect(playheads).toEqual({ one: 4, two: 0 });
+    expect(videoBatchPlayhead({ one: -2 }, 'one', 10)).toBe(0);
   });
 });

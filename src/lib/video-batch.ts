@@ -14,6 +14,8 @@ export type LogoBatchEditorTarget =
   | { type: 'batch-default' }
   | { type: 'video'; id: string };
 
+export type VideoBatchPlayheads = Readonly<Record<string, number>>;
+
 export function appendVideoBatch(
   batch: readonly VideoBatchItem[],
   files: Iterable<File>,
@@ -65,4 +67,27 @@ export function initialLogoBatchEditorTarget(
   const supported = supportedVideoBatchItems(batch);
   if (supported.length >= 2) return { type: 'batch-default' };
   if (supported[0]) return { type: 'video', id: supported[0].id };
+}
+
+/** Each video keeps its own full-duration preview position while targets change. */
+export function videoBatchPlayhead(
+  playheads: VideoBatchPlayheads,
+  id: string,
+  duration: number,
+) {
+  return clamp(playheads[id] ?? 0, duration);
+}
+
+export function seekVideoBatchItem(
+  playheads: VideoBatchPlayheads,
+  id: string,
+  time: number,
+  duration: number,
+): VideoBatchPlayheads {
+  return { ...playheads, [id]: clamp(time, duration) };
+}
+
+function clamp(time: number, duration: number) {
+  if (!Number.isFinite(time)) return 0;
+  return Math.min(Math.max(0, duration), Math.max(0, time));
 }
