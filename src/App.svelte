@@ -7,11 +7,12 @@
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
+  import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
-  type Step = 1 | 2 | 3;
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
 
-  let step: Step = 1;
+  let workflow: Workflow | null = null;
+  let step: WorkflowStep = 1;
   let project = createEditorProject('layer-1');
   let file: File | null = null;
   let sourceUrl = '';
@@ -62,6 +63,8 @@
 
   function resetSource() {
     worker?.terminate();
+    worker = undefined;
+    stopTimer();
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     sourceUrl = '';
     file = null;
@@ -75,7 +78,21 @@
     project = createEditorProject('layer-1');
   }
 
-  function navigate(next: Step) {
+  function chooseWorkflow(next: Workflow) {
+    workflow = next;
+    step = 1;
+  }
+
+  function returnToWorkflowChoice() {
+    const hasWork = fileState !== 'idle' || exportState !== 'idle';
+    if (needsDiscardConfirmation(workflow, hasWork) && !window.confirm($t('scenario.confirmDiscard'))) return;
+    resetSource();
+    workflow = null;
+    step = 1;
+  }
+
+  function navigate(next: WorkflowStep) {
+    if (workflow !== 'text') return;
     if (next === 1 || (next === 2 && file) || (next === 3 && exportUnlocked)) step = next;
   }
 
@@ -150,18 +167,52 @@
 <main class="app-shell">
   <header class="app-header">
     <div class="header-context">
-      <button class="brand" aria-label={$t('brand.home')} onclick={() => navigate(1)}><span class="brand-mark">k</span><span><b>klex</b><small>{$t('brand.tagline')}</small></span></button>
-      {#if file}<div class="project-file"><span></span><p>{file.name}<small>{formatDuration(project.duration)} · {$t('layer.count', { count: project.layers.length })}</small></p></div>{/if}
+      <button class="brand" aria-label={$t('brand.home')} onclick={returnToWorkflowChoice}><span class="brand-mark">k</span><span><b>klex</b><small>{$t('brand.tagline')}</small></span></button>
+      {#if workflow === 'text' && file}<div class="project-file"><span></span><p>{file.name}<small>{formatDuration(project.duration)} · {$t('layer.count', { count: project.layers.length })}</small></p></div>{/if}
     </div>
     <div class="header-actions">
       <label class="language-picker"><span class="sr-only">{$t('language.label')}</span><select aria-label={$t('language.label')} value={$locale} onchange={chooseLocale}>{#each languages as language}<option value={language.code}>{language.name}</option>{/each}</select></label>
-      {#if step === 2 && file}<button class="primary header-export" disabled={!editorReady} onclick={openExport}>{$t('header.export')} <b>→</b></button>{/if}
+      {#if workflow === 'text' && step === 2 && file}<button class="primary header-export" disabled={!editorReady} onclick={openExport}>{$t('header.export')} <b>→</b></button>{/if}
     </div>
   </header>
 
-  <StepIndicator current={step} {exportUnlocked} onNavigate={navigate} />
+  {#if workflow}<StepIndicator {workflow} current={step} {exportUnlocked} onNavigate={navigate} />{/if}
 
-  {#if step === 1}
+  {#if workflow === null}
+    <section class="scenario-step step-view">
+      <div class="hero-copy scenario-copy">
+        <span class="eyebrow">{$t('scenario.eyebrow')}</span>
+        <h1>{$t('scenario.title')}</h1>
+        <p>{$t('scenario.subtitle')}</p>
+      </div>
+      <div class="scenario-grid">
+        <button class="scenario-card text-scenario" onclick={() => chooseWorkflow('text')}>
+          <span class="scenario-icon" aria-hidden="true">Aa</span>
+          <span class="scenario-meta">{$t('scenario.text.meta')}</span>
+          <strong>{$t('scenario.text.title')}</strong>
+          <p>{$t('scenario.text.description')}</p>
+          <span class="scenario-route"><span>{$t('steps.video')} · {$t('steps.overlays')} · {$t('steps.export')}</span><b aria-hidden="true">→</b></span>
+        </button>
+        <button class="scenario-card logo-scenario" onclick={() => chooseWorkflow('logo')}>
+          <span class="scenario-icon logo-icon" aria-hidden="true">◇</span>
+          <span class="scenario-meta">{$t('scenario.logo.meta')}</span>
+          <strong>{$t('scenario.logo.title')}</strong>
+          <p>{$t('scenario.logo.description')}</p>
+          <span class="scenario-route"><span>{$t('steps.files')} · {$t('steps.position')} · {$t('steps.export')}</span><b aria-hidden="true">→</b></span>
+        </button>
+      </div>
+      <div class="privacy-note"><span>✦</span><p><strong>{$t('privacy.title')}</strong><br />{$t('privacy.body')}</p></div>
+    </section>
+  {:else if workflow === 'logo'}
+    <section class="logo-flow-step step-view">
+      <div class="hero-copy">
+        <span class="eyebrow">{$t('scenario.logo.meta')}</span>
+        <h1>{$t('scenario.logo.title')}</h1>
+        <p>{$t('scenario.logo.description')}</p>
+      </div>
+      <button class="secondary workflow-back" onclick={returnToWorkflowChoice}>← {$t('brand.home')}</button>
+    </section>
+  {:else if step === 1}
     <section class="upload-step step-view">
       <div class="hero-copy"><span class="eyebrow">{$t('hero.eyebrow')}</span><h1>{$t('hero.before')}<br/><em>{$t('hero.emphasis')}</em><br/>{$t('hero.after')}</h1><p>{$t('hero.subtitle')}</p></div>
       <label class:loading={fileState === 'validating'} class="dropzone" ondragover={(event) => event.preventDefault()} ondrop={dropFile}>

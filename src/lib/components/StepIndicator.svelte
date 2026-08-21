@@ -1,15 +1,16 @@
 <script lang="ts">
-  import { t, type MessageKey } from '../i18n';
+  import { t } from '../i18n';
+  import { getWorkflowSteps, type Workflow, type WorkflowStep } from '../workflow';
 
-  export let current: 1 | 2 | 3;
+  export let workflow: Workflow;
+  export let current: WorkflowStep;
   export let exportUnlocked: boolean;
-  export let onNavigate: (step: 1 | 2 | 3) => void;
+  export let onNavigate: (step: WorkflowStep) => void;
 
-  const steps = [
-    { id: 1 as const, label: 'steps.video' as MessageKey },
-    { id: 2 as const, label: 'steps.overlays' as MessageKey },
-    { id: 3 as const, label: 'steps.export' as MessageKey },
-  ];
+  $: steps = getWorkflowSteps(workflow).map((label, index) => ({
+    id: (index + 1) as WorkflowStep,
+    label,
+  }));
 </script>
 
 <nav class="steps" aria-label={$t('steps.label')}>
