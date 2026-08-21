@@ -12,7 +12,9 @@ import {
   logoOffsetBounds,
   logoPlacement,
   logoSafeArea,
+  logoSettingsAtPosition,
   maximumLogoSize,
+  moveLogo,
   validateLogoFile,
 } from './logo';
 
@@ -149,6 +151,57 @@ describe('Logo', () => {
     expect(canonicalLogoOffset('bottom-right', 0.05)).toEqual({ offsetX: -0.05, offsetY: -0.05 });
     expect(canonicalLogoOffset('center', 0.2)).toEqual({ offsetX: 0, offsetY: 0 });
     expect(logoSafeArea({ width: 1920, height: 1080 }, 0.1)).toEqual({ x: 0.05625, y: 0.1 });
+  });
+
+  it('snaps Logo edges to Safe Margin lines and its centre to frame axes', () => {
+    const image = { width: 1000, height: 1000 };
+    const frame = { width: 1000, height: 1000 };
+    const settings = { ...DEFAULT_LOGO_SETTINGS, size: 0.2 };
+
+    const moved = moveLogo(image, frame, settings, { left: 0.059, top: 0.409 }, { x: 0.01, y: 0.01 });
+
+    const placement = logoPlacement(image, frame, moved);
+    expect(placement.left).toBeCloseTo(0.05);
+    expect(placement.top).toBeCloseTo(0.4);
+  });
+
+  it('does not snap outside the supplied screen-space threshold', () => {
+    const image = { width: 1000, height: 1000 };
+    const frame = { width: 1000, height: 1000 };
+    const settings = { ...DEFAULT_LOGO_SETTINGS, size: 0.2 };
+
+    const moved = moveLogo(image, frame, settings, { left: 0.061, top: 0.411 }, { x: 0.01, y: 0.01 });
+
+    const placement = logoPlacement(image, frame, moved);
+    expect(placement.left).toBeCloseTo(0.061);
+    expect(placement.top).toBeCloseTo(0.411);
+  });
+
+  it('keeps the entire Logo inside the Safe Margin while dragging', () => {
+    const image = { width: 2000, height: 1000 };
+    const frame = { width: 1920, height: 1080 };
+    const settings = { ...DEFAULT_LOGO_SETTINGS, size: 0.3, safeMargin: 0.1 };
+
+    const topLeft = logoPlacement(image, frame, moveLogo(image, frame, settings, { left: -1, top: -1 }, { x: 0, y: 0 }));
+    const bottomRight = logoPlacement(image, frame, moveLogo(image, frame, settings, { left: 2, top: 2 }, { x: 0, y: 0 }));
+    const safeArea = logoSafeArea(frame, settings.safeMargin);
+
+    expect(topLeft.left).toBeCloseTo(safeArea.x);
+    expect(topLeft.top).toBeCloseTo(safeArea.y);
+    expect(bottomRight.left + bottomRight.width).toBeCloseTo(1 - safeArea.x);
+    expect(bottomRight.top + bottomRight.height).toBeCloseTo(1 - safeArea.y);
+  });
+
+  it('chooses the nearest Logo Anchor and recalculates Offset without a visual jump', () => {
+    const image = { width: 1000, height: 500 };
+    const frame = { width: 1000, height: 1000 };
+    const settings = { ...DEFAULT_LOGO_SETTINGS, anchor: 'top-left' as const, offsetX: 0.05, offsetY: 0.05 };
+    const position = { left: 0.72, top: 0.82 };
+
+    const anchored = logoSettingsAtPosition(image, frame, settings, position);
+
+    expect(anchored.anchor).toBe('bottom-right');
+    expect(logoPlacement(image, frame, anchored)).toMatchObject(position);
   });
 
   it('accepts a full video only within the Logo duration limit', () => {

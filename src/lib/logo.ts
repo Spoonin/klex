@@ -35,6 +35,8 @@ export const DEFAULT_LOGO_SETTINGS: Readonly<LogoSettings> = {
 
 type Size = { width: number; height: number };
 type OffsetBounds = { minX: number; maxX: number; minY: number; maxY: number };
+type Position = { left: number; top: number };
+type SnapDistance = { x: number; y: number };
 
 type DecodedImage = { width: number; height: number; close(): void };
 type ImageDecoder = (file: File) => Promise<DecodedImage>;
@@ -171,6 +173,63 @@ export function logoPlacement(
   };
 }
 
+/**
+ * Moves a Logo from its top-left frame-normalised position, constraining it to
+ * the Safe Margin and snapping its edges/centre to the canonical guide lines.
+ */
+export function moveLogo(
+  image: Pick<LogoSource, 'width' | 'height'>,
+  frame: Size,
+  settings: LogoSettings,
+  position: Position,
+  snapDistance: SnapDistance,
+): LogoSettings {
+  const placement = logoPlacement(image, frame, settings);
+  const safeArea = logoSafeArea(frame, settings.safeMargin);
+  const horizontalTargets = [safeArea.x, 0.5 - placement.width / 2, 1 - safeArea.x - placement.width];
+  const verticalTargets = [safeArea.y, 0.5 - placement.height / 2, 1 - safeArea.y - placement.height];
+  const left = clamp(
+    snapped(position.left, horizontalTargets, snapDistance.x),
+    safeArea.x,
+    1 - safeArea.x - placement.width,
+  );
+  const top = clamp(
+    snapped(position.top, verticalTargets, snapDistance.y),
+    safeArea.y,
+    1 - safeArea.y - placement.height,
+  );
+
+  return logoSettingsAtPosition(image, frame, settings, { left, top });
+}
+
+/** Re-expresses an unchanged visual position using its nearest Logo Anchor. */
+export function logoSettingsAtPosition(
+  image: Pick<LogoSource, 'width' | 'height'>,
+  frame: Size,
+  settings: LogoSettings,
+  position: Position,
+): LogoSettings {
+  const geometry = logoGeometry(image, frame, settings.size);
+  const left = position.left * geometry.frameWidth;
+  const top = position.top * geometry.frameHeight;
+  const anchors: LogoAnchor[] = ['top-left', 'top-right', 'center', 'bottom-left', 'bottom-right'];
+  const candidates = anchors.map((anchor) => {
+    const frameAnchor = anchorPoint(anchor, geometry.frameWidth, geometry.frameHeight);
+    const reference = logoReference(anchor);
+    const offsetX = left + reference.x * geometry.width - frameAnchor.x;
+    const offsetY = top + reference.y * geometry.height - frameAnchor.y;
+    return { anchor, offsetX, offsetY, distance: offsetX ** 2 + offsetY ** 2 };
+  });
+  const nearest = candidates.reduce((best, candidate) => candidate.distance < best.distance ? candidate : best);
+
+  return {
+    ...settings,
+    anchor: nearest.anchor,
+    offsetX: nearest.offsetX,
+    offsetY: nearest.offsetY,
+  };
+}
+
 function logoGeometry(image: Size, frame: Size, size: number) {
   const shortSide = Math.min(frame.width, frame.height);
   const longSide = Math.max(image.width, image.height);
@@ -198,6 +257,13 @@ function logoReference(anchor: LogoAnchor) {
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, Number.isFinite(value) ? value : minimum));
+}
+
+function snapped(value: number, targets: number[], distance: number) {
+  const nearest = targets.reduce((best, target) => (
+    Math.abs(target - value) < Math.abs(best - value) ? target : best
+  ));
+  return Math.abs(nearest - value) <= Math.max(0, distance) ? nearest : value;
 }
 
 function isSupportedLogo(buffer: ArrayBuffer) {

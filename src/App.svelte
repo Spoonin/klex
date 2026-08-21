@@ -389,7 +389,7 @@
       <div class="step-title"><div><span class="eyebrow">{$t('logo.previewEyebrow')}</span><h1>{$t('logo.previewTitle')}</h1><p>{$t('logo.previewDescription')}</p></div></div>
       <div class="logo-workspace">
         {#key `${sourceUrl}:${logoUrl}`}
-          <LogoStage {sourceUrl} {logoUrl} videoWidth={sourceMetadata.width} videoHeight={sourceMetadata.height} logo={logoSource} onReady={() => previewReady = true} />
+          <LogoStage {sourceUrl} {logoUrl} videoWidth={sourceMetadata.width} videoHeight={sourceMetadata.height} logo={logoSource} onReady={() => previewReady = true} onChange={updateLogoSettings} />
         {/key}
         <LogoInspector image={logoSource} frame={sourceMetadata} settings={logoSettings} onChange={updateLogoSettings} />
       </div>
