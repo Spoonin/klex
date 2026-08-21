@@ -6,6 +6,7 @@
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
+  import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
@@ -28,6 +29,8 @@
   let unsupportedAudio = false;
   let worker: Worker | undefined;
   let trimRequired = false;
+  let temporaryOutput: TemporaryOutput | undefined;
+  let exportAttempt = 0;
 
   $: activeLayer = getActiveLayer(project);
   $: editorReady = previewReady && !trimRequired && canExportProject(project);
@@ -62,8 +65,10 @@
   }
 
   function resetSource() {
+    exportAttempt += 1;
     worker?.terminate();
     worker = undefined;
+    void cleanupTemporaryOutput();
     stopTimer();
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     sourceUrl = '';
@@ -128,35 +133,94 @@
     });
   }
 
-  function exportVideo(nextPreset = preset) {
+  async function exportVideo(nextPreset = preset) {
     if (!file || !editorReady) return;
+    const attempt = ++exportAttempt;
     worker?.terminate(); stopTimer();
-    worker = new Worker(new URL('./workers/export.worker.ts', import.meta.url), { type: 'module' });
     exportState = 'exporting'; progress = 0; elapsed = 0; error = '';
+    const cleaned = await cleanupTemporaryOutput();
+    if (!cleaned) {
+      exportState = 'error';
+      return;
+    }
+    if (attempt !== exportAttempt) return;
+    try {
+      temporaryOutput = await createTemporaryOutput();
+    } catch (cause) {
+      error = errorKey(cause instanceof TemporaryStorageUnavailableError ? 'storage' : 'generic');
+      exportState = 'error';
+      return;
+    }
+    if (attempt !== exportAttempt) {
+      await cleanupTemporaryOutput();
+      return;
+    }
+    worker = new Worker(new URL('./workers/export.worker.ts', import.meta.url), { type: 'module' });
     exportTimer = setInterval(() => elapsed += 1, 1000);
     worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
+      if (attempt !== exportAttempt) return;
       if (data.type === 'progress') progress = Math.round(data.completed / data.total * 100);
-      else if (data.type === 'complete') { progress = 100; stopTimer(); save(data.file); exportState = 'done'; worker?.terminate(); }
-      else if (data.type === 'error') { stopTimer(); error = errorKey(data.code); exportState = 'error'; worker?.terminate(); }
+      else if (data.type === 'complete') {
+        progress = 100; stopTimer();
+        const completedOutput = temporaryOutput;
+        temporaryOutput = undefined;
+        save(data.file, completedOutput);
+        exportState = 'done'; worker?.terminate(); worker = undefined;
+      } else if (data.type === 'error') {
+        stopTimer(); error = errorKey(data.code); exportState = 'error'; worker?.terminate(); worker = undefined;
+        void cleanupTemporaryOutput();
+      }
+    };
+    worker.onerror = () => {
+      if (attempt !== exportAttempt) return;
+      stopTimer(); error = errorKey('generic'); exportState = 'error'; worker?.terminate(); worker = undefined;
+      void cleanupTemporaryOutput();
     };
     const request: ExportRequest = {
       type: 'export', file, preset: nextPreset,
       layers: project.layers.map(({ id: _id, kind: _kind, ...layer }) => layer),
       trim: project.trim,
+      output: temporaryOutput.handle,
     };
-    worker.postMessage(request);
+    try {
+      worker.postMessage(request);
+    } catch {
+      stopTimer(); error = errorKey('storage'); exportState = 'error'; worker.terminate(); worker = undefined;
+      void cleanupTemporaryOutput();
+    }
   }
 
-  function save(buffer: ArrayBuffer) {
-    const url = URL.createObjectURL(new Blob([buffer], { type: 'video/mp4' }));
+  function save(result: File, output: TemporaryOutput | undefined) {
+    const url = URL.createObjectURL(result);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = `${file?.name.replace(/\.[^.]+$/, '') ?? 'klex-export'}-klex.mp4`;
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      void output?.dispose().catch(() => { error = errorKey('storage'); });
+    }, 1000);
   }
   function stopTimer() { if (exportTimer) clearInterval(exportTimer); exportTimer = undefined; }
-  function cancelExport() { worker?.terminate(); stopTimer(); exportState = 'idle'; progress = 0; }
+  function cancelExport() {
+    exportAttempt += 1;
+    worker?.terminate(); worker = undefined;
+    stopTimer(); exportState = 'idle'; progress = 0;
+    void cleanupTemporaryOutput();
+  }
+  async function cleanupTemporaryOutput() {
+    const output = temporaryOutput;
+    temporaryOutput = undefined;
+    if (!output) return true;
+    try {
+      await output.dispose();
+      return true;
+    } catch {
+      temporaryOutput = output;
+      error = errorKey('storage');
+      return false;
+    }
+  }
   function formatDuration(value: number) { return `${Math.floor(value / 60)}:${Math.round(value % 60).toString().padStart(2, '0')}`; }
   function errorKey(code: WorkerErrorCode): MessageKey { return `error.${code}` as MessageKey; }
   function chooseLocale(event: Event) { setLocale((event.currentTarget as HTMLSelectElement).value as Locale); }

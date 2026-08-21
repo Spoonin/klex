@@ -151,8 +151,8 @@ const en = {
   'error.generic': 'The export could not be completed.',
 } as const satisfies Record<string, Message>;
 
-type BaseMessageKey = keyof typeof en;
-type BaseMessages = Record<BaseMessageKey, Message>;
+type BaseMessageKey = keyof typeof en | 'error.storage';
+type BaseMessages = Record<keyof typeof en, Message>;
 
 const es: BaseMessages = {
   'meta.title': 'klex — textos sobre vídeo', 'brand.home': 'Ir al inicio', 'brand.tagline': 'textos en vídeo', 'language.label': 'Idioma',
@@ -446,8 +446,25 @@ export type MessageKey = BaseMessageKey | ScenarioMessageKey;
 type Messages = Record<MessageKey, Message>;
 
 const baseCatalogs: Record<Locale, BaseMessages> = { en, es, zh, hi, ar, pt, bn, ru, ja, fr, de, id, tr, ur, pl };
+const storageErrors: Record<Locale, string> = {
+  en: 'This browser cannot provide the temporary storage required for export.',
+  es: 'Este navegador no puede proporcionar el almacenamiento temporal necesario para exportar.',
+  zh: '此浏览器无法提供导出所需的临时存储空间。',
+  hi: 'यह ब्राउज़र एक्सपोर्ट के लिए आवश्यक अस्थायी स्टोरेज उपलब्ध नहीं करा सकता।',
+  ar: 'لا يستطيع هذا المتصفح توفير التخزين المؤقت المطلوب للتصدير.',
+  pt: 'Este navegador não oferece o armazenamento temporário necessário para exportar.',
+  bn: 'এই ব্রাউজার এক্সপোর্টের জন্য প্রয়োজনীয় অস্থায়ী স্টোরেজ দিতে পারে না।',
+  ru: 'Этот браузер не предоставляет временное хранилище, необходимое для экспорта.',
+  ja: 'このブラウザーでは、書き出しに必要な一時ストレージを利用できません。',
+  fr: 'Ce navigateur ne fournit pas le stockage temporaire requis pour l’export.',
+  de: 'Dieser Browser kann den für den Export erforderlichen temporären Speicher nicht bereitstellen.',
+  id: 'Browser ini tidak menyediakan penyimpanan sementara yang diperlukan untuk ekspor.',
+  tr: 'Bu tarayıcı dışa aktarma için gereken geçici depolamayı sağlayamıyor.',
+  ur: 'یہ براؤزر ایکسپورٹ کے لیے درکار عارضی اسٹوریج فراہم نہیں کر سکتا۔',
+  pl: 'Ta przeglądarka nie udostępnia pamięci tymczasowej wymaganej do eksportu.',
+};
 const catalogs = languages.reduce<Record<Locale, Messages>>((result, { code }) => {
-  result[code] = { ...baseCatalogs[code], ...scenarioCatalogs[code] };
+  result[code] = { ...baseCatalogs[code], ...scenarioCatalogs[code], 'error.storage': storageErrors[code] };
   return result;
 }, {} as Record<Locale, Messages>);
 const rtlLocales = new Set<Locale>(['ar', 'ur']);

@@ -10,7 +10,6 @@ import {
   Mp4OutputFormat,
   Output,
   StreamTarget,
-  type StreamTargetChunk,
 } from 'mediabunny';
 import type { ExportPreset, ExportRequest, ValidateRequest, WorkerErrorCode, WorkerMessage } from '../lib/export-protocol';
 import { isInTrimWindow } from '../lib/trim';
@@ -52,103 +51,129 @@ async function validateFile({ file }: ValidateRequest) {
   }
 }
 
-async function exportFile({ file, preset, layers, trim }: ExportRequest) {
+async function exportFile({ file, preset, layers, trim, output: outputHandle }: ExportRequest) {
   if (!('OffscreenCanvas' in self) || !('VideoDecoder' in self) || !('VideoEncoder' in self)) {
     throw new WorkerFailure('capabilities');
   }
+  if (!outputHandle || typeof outputHandle.createWritable !== 'function') throw new WorkerFailure('storage');
 
   const input = new Input({ formats: [MP4], source: new BlobSource(file) });
-  const videoTrack = await input.getPrimaryVideoTrack();
-  if (!videoTrack) throw new WorkerFailure('noVideo');
-  const decoderConfig = await videoTrack.getDecoderConfig();
-  if (!decoderConfig) throw new WorkerFailure('decoder');
+  let output: Output | undefined;
+  let decoder: VideoDecoder | undefined;
+  let encoder: VideoEncoder | undefined;
+  let renderer: VideoRenderer | undefined;
+  try {
+    const videoTrack = await input.getPrimaryVideoTrack();
+    if (!videoTrack) throw new WorkerFailure('noVideo');
+    const decoderConfig = await videoTrack.getDecoderConfig();
+    if (!decoderConfig) throw new WorkerFailure('decoder');
 
-  const audioTrack = await input.getPrimaryAudioTrack();
-  // MP4 edit lists and B-frames may make the first presentation timestamp
-  // negative. All output tracks share this origin so A/V stays in sync.
-  const timelineStart = await input.getFirstTimestamp(audioTrack ? [videoTrack, audioTrack] : [videoTrack]);
-  const timelineStartMicroseconds = Math.round(timelineStart * 1_000_000);
-  const [displayWidth, displayHeight, rotation] = await Promise.all([
-    videoTrack.getDisplayWidth(),
-    videoTrack.getDisplayHeight(),
-    videoTrack.getRotation(),
-  ]);
-  const { width, height } = outputSize(displayWidth, displayHeight, preset);
-  const encoderConfig = await supportedEncoderConfig(width, height, preset);
-  const canvas = new OffscreenCanvas(width, height);
-  const renderer = createVideoRenderer(canvas, layers, rotation);
-  const writer = new SeekableBufferWriter();
-  const output = new Output({ format: new Mp4OutputFormat(), target: new StreamTarget(writer.stream) });
-  const videoSource = new EncodedVideoPacketSource('avc');
-  output.addVideoTrack(videoSource);
-
-  let audioSource: EncodedAudioPacketSource | undefined;
-  if (audioTrack && await isAacLc(audioTrack)) {
-    audioSource = new EncodedAudioPacketSource('aac');
-    output.addAudioTrack(audioSource, { decoderConfig: await audioTrack.getDecoderConfig() ?? undefined });
-  }
-  await output.start();
-
-  let packetWrites = Promise.resolve();
-  let firstVideoPacket = true;
-  const encoder = new VideoEncoder({
-    output(chunk, metadata) {
-      const packet = EncodedPacket.fromEncodedChunk(chunk);
-      const isFirstPacket = firstVideoPacket;
-      packetWrites = packetWrites.then(() => videoSource.add(packet, isFirstPacket ? metadata : undefined));
-      firstVideoPacket = false;
-    },
-    error(error) { throw error; },
-  });
-  encoder.configure(encoderConfig);
-
-  let rendered = Promise.resolve();
-  const firstEncodedFrame = { value: true };
-  const decoder = new VideoDecoder({
-    output(frame) {
-      rendered = rendered.then(() => {
-        return renderAndEncode(frame, renderer, canvas, encoder, timelineStartMicroseconds, trim.trimIn, trim.trimOut, firstEncodedFrame);
-      });
-    },
-    error(error) { throw error; },
-  });
-  decoder.configure(decoderConfig);
-
-  const videoPackets = new EncodedPacketSink(videoTrack);
-  const trimStartKeyPacket = await videoPackets.getKeyPacket(timelineStart + trim.trimIn, { verifyKeyPackets: true });
-  const trimDuration = trim.trimOut - trim.trimIn;
-  let progressSeconds = 0;
-  for await (const packet of videoPackets.packets(trimStartKeyPacket ?? undefined)) {
-    if (packet.timestamp >= timelineStart + trim.trimOut) break;
-    decoder.decode(packet.toEncodedVideoChunk());
-    if (decoder.decodeQueueSize >= MAX_IN_FLIGHT_FRAMES) await rendered;
-    progressSeconds = Math.max(progressSeconds, Math.min(trimDuration, packet.timestamp - timelineStart - trim.trimIn));
-    post({ type: 'progress', completed: progressSeconds, total: trimDuration });
-  }
-  await decoder.flush();
-  await rendered;
-  await encoder.flush();
-  await packetWrites;
-  post({ type: 'progress', completed: trimDuration, total: trimDuration });
-  decoder.close();
-  encoder.close();
-  renderer.close();
-  videoSource.close();
-
-  if (audioTrack && audioSource) {
-    const audioPackets = new EncodedPacketSink(audioTrack);
-    for await (const packet of audioPackets.packets()) {
-      const relativeTimestamp = packet.timestamp - timelineStart;
-      if (relativeTimestamp >= trim.trimOut) break;
-      if (!isInTrimWindow(relativeTimestamp, trim)) continue;
-      await audioSource.add(packet.clone({ timestamp: nonNegativeTimestamp(relativeTimestamp - trim.trimIn) }));
+    const audioTrack = await input.getPrimaryAudioTrack();
+    // MP4 edit lists and B-frames may make the first presentation timestamp
+    // negative. All output tracks share this origin so A/V stays in sync.
+    const timelineStart = await input.getFirstTimestamp(audioTrack ? [videoTrack, audioTrack] : [videoTrack]);
+    const timelineStartMicroseconds = Math.round(timelineStart * 1_000_000);
+    const [displayWidth, displayHeight, rotation] = await Promise.all([
+      videoTrack.getDisplayWidth(),
+      videoTrack.getDisplayHeight(),
+      videoTrack.getRotation(),
+    ]);
+    const { width, height } = outputSize(displayWidth, displayHeight, preset);
+    const encoderConfig = await supportedEncoderConfig(width, height, preset);
+    const canvas = new OffscreenCanvas(width, height);
+    renderer = createVideoRenderer(canvas, layers, rotation);
+    let writable: FileSystemWritableFileStream;
+    try {
+      writable = await outputHandle.createWritable();
+    } catch {
+      throw new WorkerFailure('storage');
     }
-    audioSource.close();
+    output = new Output({
+      format: new Mp4OutputFormat(),
+      target: new StreamTarget(
+        writable as WritableStream<import('mediabunny').StreamTargetChunk>,
+        { chunked: true },
+      ),
+    });
+    const videoSource = new EncodedVideoPacketSource('avc');
+    output.addVideoTrack(videoSource);
+
+    let audioSource: EncodedAudioPacketSource | undefined;
+    if (audioTrack && await isAacLc(audioTrack)) {
+      audioSource = new EncodedAudioPacketSource('aac');
+      output.addAudioTrack(audioSource, { decoderConfig: await audioTrack.getDecoderConfig() ?? undefined });
+    }
+    await output.start();
+
+    let packetWrites = Promise.resolve();
+    let firstVideoPacket = true;
+    encoder = new VideoEncoder({
+      output(chunk, metadata) {
+        const packet = EncodedPacket.fromEncodedChunk(chunk);
+        const isFirstPacket = firstVideoPacket;
+        packetWrites = packetWrites.then(() => videoSource.add(packet, isFirstPacket ? metadata : undefined));
+        firstVideoPacket = false;
+      },
+      error(error) { throw error; },
+    });
+    encoder.configure(encoderConfig);
+
+    let rendered = Promise.resolve();
+    const firstEncodedFrame = { value: true };
+    decoder = new VideoDecoder({
+      output(frame) {
+        rendered = rendered.then(() => {
+          return renderAndEncode(frame, renderer!, canvas, encoder!, timelineStartMicroseconds, trim.trimIn, trim.trimOut, firstEncodedFrame);
+        });
+      },
+      error(error) { throw error; },
+    });
+    decoder.configure(decoderConfig);
+
+    const videoPackets = new EncodedPacketSink(videoTrack);
+    const trimStartKeyPacket = await videoPackets.getKeyPacket(timelineStart + trim.trimIn, { verifyKeyPackets: true });
+    const trimDuration = trim.trimOut - trim.trimIn;
+    let progressSeconds = 0;
+    for await (const packet of videoPackets.packets(trimStartKeyPacket ?? undefined)) {
+      if (packet.timestamp >= timelineStart + trim.trimOut) break;
+      decoder.decode(packet.toEncodedVideoChunk());
+      if (decoder.decodeQueueSize >= MAX_IN_FLIGHT_FRAMES) await rendered;
+      progressSeconds = Math.max(progressSeconds, Math.min(trimDuration, packet.timestamp - timelineStart - trim.trimIn));
+      post({ type: 'progress', completed: progressSeconds, total: trimDuration });
+    }
+    await decoder.flush();
+    await rendered;
+    await encoder.flush();
+    await packetWrites;
+    post({ type: 'progress', completed: trimDuration, total: trimDuration });
+    decoder.close();
+    encoder.close();
+    renderer.close();
+    renderer = undefined;
+    videoSource.close();
+
+    if (audioTrack && audioSource) {
+      const audioPackets = new EncodedPacketSink(audioTrack);
+      for await (const packet of audioPackets.packets()) {
+        const relativeTimestamp = packet.timestamp - timelineStart;
+        if (relativeTimestamp >= trim.trimOut) break;
+        if (!isInTrimWindow(relativeTimestamp, trim)) continue;
+        await audioSource.add(packet.clone({ timestamp: nonNegativeTimestamp(relativeTimestamp - trim.trimIn) }));
+      }
+      audioSource.close();
+    }
+    await output.finalize();
+    const result = await outputHandle.getFile();
+    post({ type: 'complete', file: result });
+  } catch (cause) {
+    await output?.cancel().catch(() => {});
+    throw cause;
+  } finally {
+    if (decoder?.state !== 'closed') decoder?.close();
+    if (encoder?.state !== 'closed') encoder?.close();
+    renderer?.close();
+    input.dispose();
   }
-  await output.finalize();
-  const result = writer.toArrayBuffer();
-  input.dispose();
-  post({ type: 'complete', file: result }, [result]);
 }
 
 async function supportedEncoderConfig(width: number, height: number, preset: ExportPreset): Promise<VideoEncoderConfig> {
@@ -196,13 +221,6 @@ async function isAacLc(audioTrack: Awaited<ReturnType<Input['getPrimaryAudioTrac
 function nonNegativeTimestamp(timestamp: number) {
   // Tiny negative values can remain after floating point timebase conversion.
   return Math.max(0, timestamp);
-}
-
-class SeekableBufferWriter {
-  private bytes = new Uint8Array(0);
-  private length = 0;
-  readonly stream = new WritableStream<StreamTargetChunk>({ write: ({ data, position }) => { const required = position + data.byteLength; if (required > this.bytes.byteLength) { const next = new Uint8Array(Math.max(required, this.bytes.byteLength * 2, 1024)); next.set(this.bytes); this.bytes = next; } this.bytes.set(data, position); this.length = Math.max(this.length, required); } });
-  toArrayBuffer() { return this.bytes.slice(0, this.length).buffer; }
 }
 
 function post(message: WorkerMessage, transfer?: Transferable[]) { self.postMessage(message, transfer ?? []); }

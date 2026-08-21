@@ -32,6 +32,7 @@ describe('i18n', () => {
       expect(translate('scenario.logo.title')).not.toHaveLength(0);
       expect(translate('steps.files')).not.toHaveLength(0);
       expect(translate('steps.position')).not.toHaveLength(0);
+      expect(translate('error.storage')).not.toHaveLength(0);
     }
 
     setLocale('ru');
