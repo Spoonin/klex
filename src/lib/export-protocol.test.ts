@@ -12,7 +12,7 @@ describe('export worker protocol', () => {
     const output = { kind: 'file', name: 'temporary.mp4' } as FileSystemFileHandle;
     const logo = {
       file: new File([], 'logo.png', { type: 'image/png' }), width: 400, height: 200,
-      settings: { anchor: 'bottom-right', size: 0.2, safeMargin: 0.05, opacity: 1, offsetX: 0, offsetY: 0 },
+      settings: { anchor: 'bottom-right', size: 0.2, safeMargin: 0.05, opacity: 1, offsetX: -0.05, offsetY: -0.05 },
     } as const;
     const request: Pick<ExportRequest, 'type' | 'preset' | 'trim' | 'output' | 'logo'> = {
       type: 'export',

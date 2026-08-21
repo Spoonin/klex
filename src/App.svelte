@@ -1,5 +1,6 @@
 <script lang="ts">
   import LayerInspector from './lib/components/LayerInspector.svelte';
+  import LogoInspector from './lib/components/LogoInspector.svelte';
   import LogoStage from './lib/components/LogoStage.svelte';
   import StepIndicator from './lib/components/StepIndicator.svelte';
   import VideoStage from './lib/components/VideoStage.svelte';
@@ -7,7 +8,7 @@
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
-  import { DEFAULT_LOGO_SETTINGS, LogoValidationError, isLogoVideoDurationSupported, validateLogoFile, type LogoSource } from './lib/logo';
+  import { DEFAULT_LOGO_SETTINGS, LogoValidationError, fitLogoSettings, isLogoVideoDurationSupported, maximumLogoSize, validateLogoFile, type LogoSettings, type LogoSource } from './lib/logo';
   import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
@@ -39,10 +40,11 @@
   let logoMetadata: { width: number; height: number } | null = null;
   let logoState: 'idle' | 'validating' | 'ready' | 'error' = 'idle';
   let logoValidationAttempt = 0;
+  let logoSettings: LogoSettings = { ...DEFAULT_LOGO_SETTINGS };
 
   $: activeLayer = getActiveLayer(project);
   $: logoSource = logoFile && logoMetadata
-    ? { file: logoFile, ...logoMetadata, settings: { ...DEFAULT_LOGO_SETTINGS } } satisfies LogoSource
+    ? { file: logoFile, ...logoMetadata, settings: logoSettings } satisfies LogoSource
     : undefined;
   $: editorReady = workflow === 'text' && previewReady && !trimRequired && canExportProject(project);
   $: logoEditorReady = workflow === 'logo' && previewReady && !!file && !!logoSource && !!sourceMetadata;
@@ -88,6 +90,7 @@
       if (logoUrl) URL.revokeObjectURL(logoUrl);
       logoFile = next;
       logoMetadata = metadata;
+      if (sourceMetadata) logoSettings = fitLogoSettings(metadata, sourceMetadata, logoSettings);
       logoUrl = URL.createObjectURL(next);
       logoState = 'ready';
       previewReady = false;
@@ -111,6 +114,7 @@
     }
     file = next;
     sourceMetadata = metadata;
+    if (logoMetadata) logoSettings = fitLogoSettings(logoMetadata, metadata, logoSettings);
     sourceUrl = URL.createObjectURL(next);
     unsupportedAudio = metadata.unsupportedAudio;
     project = updateEditorProject(project, { type: 'source-loaded', duration: metadata.duration });
@@ -154,6 +158,7 @@
     logoUrl = '';
     logoMetadata = null;
     logoState = 'idle';
+    logoSettings = { ...DEFAULT_LOGO_SETTINGS };
   }
 
   function chooseWorkflow(next: Workflow) {
@@ -180,6 +185,15 @@
   function moveLayer(id: string, patch: Pick<LayerStyle, 'x' | 'y'>) {
     dispatch({ type: 'layer-selected', id });
     dispatch({ type: 'layer-updated', patch });
+  }
+  function updateLogoSettings(patch: Partial<LogoSettings>) {
+    if (!logoMetadata || !sourceMetadata) return;
+    invalidateExport();
+    const next = { ...logoSettings, ...patch };
+    if (patch.size !== undefined) {
+      next.size = Math.min(patch.size, maximumLogoSize(logoMetadata, sourceMetadata, next));
+    }
+    logoSettings = fitLogoSettings(logoMetadata, sourceMetadata, next);
   }
   function openExport() { if (readyToExport) { exportUnlocked = true; step = 3; } }
 
@@ -377,16 +391,7 @@
         {#key `${sourceUrl}:${logoUrl}`}
           <LogoStage {sourceUrl} {logoUrl} videoWidth={sourceMetadata.width} videoHeight={sourceMetadata.height} logo={logoSource} onReady={() => previewReady = true} />
         {/key}
-        <section class="logo-defaults card">
-          <span class="kicker">{$t('logo.defaults')}</span>
-          <dl>
-            <div><dt>{$t('logo.anchor')}</dt><dd>{$t('logo.anchorBottomRight')}</dd></div>
-            <div><dt>{$t('logo.size')}</dt><dd>20%</dd></div>
-            <div><dt>{$t('logo.safeMargin')}</dt><dd>5%</dd></div>
-            <div><dt>{$t('logo.opacity')}</dt><dd>100%</dd></div>
-          </dl>
-          <p>{$t(previewReady ? 'editor.previewReady' : 'editor.previewPreparing')}</p>
-        </section>
+        <LogoInspector image={logoSource} frame={sourceMetadata} settings={logoSettings} onChange={updateLogoSettings} />
       </div>
       <footer class="step-actions"><button class="secondary" onclick={() => navigate(1)}>← {$t('logo.replaceFiles')}</button><div><span class:ready={logoEditorReady}>{$t(logoEditorReady ? 'editor.previewReady' : 'editor.previewPreparing')}</span></div></footer>
     </section>

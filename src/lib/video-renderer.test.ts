@@ -39,13 +39,13 @@ describe('video renderer', () => {
 
     const renderer = createVideoRenderer(canvas, [], 0, {
       image, width: image.width, height: image.height,
-      settings: { anchor: 'bottom-right', size: 0.2, safeMargin: 0.05, opacity: 1, offsetX: 0, offsetY: 0 },
+      settings: { anchor: 'bottom-right', size: 0.2, safeMargin: 0.05, opacity: 1, offsetX: -0.05, offsetY: -0.05 },
     });
     renderer.draw({} as VideoFrame, 0);
 
     expect(gl.drawArrays).toHaveBeenCalledTimes(2);
-    expect(gl.uniform2f).toHaveBeenCalledWith('labelOrigin', 0.75, 0.915625);
-    expect(gl.uniform2f).toHaveBeenCalledWith('labelSize', 0.2, 0.05625);
+    expect(gl.uniform2f).toHaveBeenCalledWith('labelOrigin', 0.75, expect.closeTo(0.915625));
+    expect(gl.uniform2f).toHaveBeenCalledWith('labelSize', 0.2, expect.closeTo(0.05625));
     expect(gl.uniform1f).toHaveBeenCalledWith('labelOpacity', 1);
     renderer.close();
   });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { logoPlacement, type LogoSource } from '../logo';
+  import { logoPlacement, logoSafeArea, type LogoSource } from '../logo';
   import { t } from '../i18n';
 
   export let sourceUrl: string;
@@ -13,6 +13,7 @@
   let logoLoaded = false;
   let readySent = false;
   $: placement = logoPlacement(logo, { width: videoWidth, height: videoHeight }, logo.settings);
+  $: safeArea = logoSafeArea({ width: videoWidth, height: videoHeight }, logo.settings.safeMargin);
   $: if (videoLoaded && logoLoaded && !readySent) {
     readySent = true;
     onReady();
@@ -31,7 +32,14 @@
       preload="metadata"
       onloadeddata={() => videoLoaded = true}
     ><track kind="captions" /></video>
-    <div class="safe-area" aria-hidden="true"></div>
+    <div
+      class="safe-area"
+      aria-hidden="true"
+      style:left={`${safeArea.x * 100}%`}
+      style:right={`${safeArea.x * 100}%`}
+      style:top={`${safeArea.y * 100}%`}
+      style:bottom={`${safeArea.y * 100}%`}
+    ></div>
     <img
       src={logoUrl}
       alt={$t('logo.previewAlt')}
