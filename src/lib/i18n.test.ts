@@ -32,10 +32,13 @@ describe('i18n', () => {
       expect(translate('scenario.logo.title')).not.toHaveLength(0);
       expect(translate('steps.files')).not.toHaveLength(0);
       expect(translate('steps.position')).not.toHaveLength(0);
+      expect(translate('logo.filesTitle')).not.toHaveLength(0);
+      expect(translate('error.logoDimensions')).not.toHaveLength(0);
       expect(translate('error.storage')).not.toHaveLength(0);
     }
 
     setLocale('ru');
     expect(get(t)('scenario.title')).toBe('Что вы хотите добавить?');
+    expect(get(t)('error.logoSize')).toContain('20 МБ');
   });
 });

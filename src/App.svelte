@@ -1,11 +1,13 @@
 <script lang="ts">
   import LayerInspector from './lib/components/LayerInspector.svelte';
+  import LogoStage from './lib/components/LogoStage.svelte';
   import StepIndicator from './lib/components/StepIndicator.svelte';
   import VideoStage from './lib/components/VideoStage.svelte';
   import { canExportProject, createEditorProject, getActiveLayer, updateEditorProject, type EditorProjectAction } from './lib/editor-project';
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
+  import { DEFAULT_LOGO_SETTINGS, LogoValidationError, isLogoVideoDurationSupported, validateLogoFile, type LogoSource } from './lib/logo';
   import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
@@ -16,6 +18,7 @@
   let step: WorkflowStep = 1;
   let project = createEditorProject('layer-1');
   let file: File | null = null;
+  let sourceMetadata: SourceMetadata | null = null;
   let sourceUrl = '';
   let fileState: 'idle' | 'validating' | 'ready' | 'error' = 'idle';
   let previewReady = false;
@@ -31,9 +34,19 @@
   let trimRequired = false;
   let temporaryOutput: TemporaryOutput | undefined;
   let exportAttempt = 0;
+  let logoFile: File | null = null;
+  let logoUrl = '';
+  let logoMetadata: { width: number; height: number } | null = null;
+  let logoState: 'idle' | 'validating' | 'ready' | 'error' = 'idle';
+  let logoValidationAttempt = 0;
 
   $: activeLayer = getActiveLayer(project);
-  $: editorReady = previewReady && !trimRequired && canExportProject(project);
+  $: logoSource = logoFile && logoMetadata
+    ? { file: logoFile, ...logoMetadata, settings: { ...DEFAULT_LOGO_SETTINGS } } satisfies LogoSource
+    : undefined;
+  $: editorReady = workflow === 'text' && previewReady && !trimRequired && canExportProject(project);
+  $: logoEditorReady = workflow === 'logo' && previewReady && !!file && !!logoSource && !!sourceMetadata;
+  $: readyToExport = editorReady || logoEditorReady;
 
   function dispatch(action: EditorProjectAction) { project = updateEditorProject(project, action); }
 
@@ -50,37 +63,97 @@
     if (next) await acceptFile(next);
   }
 
+  async function selectLogoFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const next = input.files?.[0];
+    if (next) await acceptLogo(next);
+    input.value = '';
+  }
+
+  async function dropLogoFile(event: DragEvent) {
+    event.preventDefault();
+    const next = event.dataTransfer?.files[0];
+    if (next) await acceptLogo(next);
+  }
+
+  async function acceptLogo(next: File) {
+    const attempt = ++logoValidationAttempt;
+    error = '';
+    logoState = 'validating';
+    try {
+      const metadata = await validateLogoFile(next);
+      if (attempt !== logoValidationAttempt) return;
+      // Image and video validation may run concurrently on the file step.
+      invalidateExport(false);
+      if (logoUrl) URL.revokeObjectURL(logoUrl);
+      logoFile = next;
+      logoMetadata = metadata;
+      logoUrl = URL.createObjectURL(next);
+      logoState = 'ready';
+      previewReady = false;
+      if (fileState === 'ready') step = 2;
+    } catch (cause) {
+      if (attempt !== logoValidationAttempt) return;
+      error = `error.${cause instanceof LogoValidationError ? cause.code : 'logoDecode'}` as MessageKey;
+      logoState = 'error';
+    }
+  }
+
   async function acceptFile(next: File) {
     resetSource();
     fileState = 'validating';
     const metadata = await validateFile(next);
     if (!metadata) return;
+    if (workflow === 'logo' && !isLogoVideoDurationSupported(metadata.duration, MAX_TRIM_DURATION)) {
+      error = 'error.logoVideoDuration';
+      fileState = 'error';
+      return;
+    }
     file = next;
+    sourceMetadata = metadata;
     sourceUrl = URL.createObjectURL(next);
     unsupportedAudio = metadata.unsupportedAudio;
     project = updateEditorProject(project, { type: 'source-loaded', duration: metadata.duration });
-    trimRequired = metadata.duration > MAX_TRIM_DURATION;
+    trimRequired = workflow === 'text' && metadata.duration > MAX_TRIM_DURATION;
     fileState = 'ready';
-    step = 2;
+    if (workflow === 'text' || logoState === 'ready') step = 2;
   }
 
   function resetSource() {
-    exportAttempt += 1;
-    worker?.terminate();
-    worker = undefined;
-    void cleanupTemporaryOutput();
-    stopTimer();
+    invalidateExport();
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
     sourceUrl = '';
     file = null;
+    sourceMetadata = null;
     fileState = 'idle';
     previewReady = false;
-    exportUnlocked = false;
-    exportState = 'idle';
-    error = '';
     unsupportedAudio = false;
     trimRequired = false;
     project = createEditorProject('layer-1');
+  }
+
+  function invalidateExport(terminateWorker = true) {
+    exportAttempt += 1;
+    if (terminateWorker) {
+      worker?.terminate();
+      worker = undefined;
+    }
+    void cleanupTemporaryOutput();
+    stopTimer();
+    exportUnlocked = false;
+    exportState = 'idle';
+    progress = 0;
+    elapsed = 0;
+    error = '';
+  }
+
+  function resetLogo() {
+    logoValidationAttempt += 1;
+    if (logoUrl) URL.revokeObjectURL(logoUrl);
+    logoFile = null;
+    logoUrl = '';
+    logoMetadata = null;
+    logoState = 'idle';
   }
 
   function chooseWorkflow(next: Workflow) {
@@ -89,16 +162,16 @@
   }
 
   function returnToWorkflowChoice() {
-    const hasWork = fileState !== 'idle' || exportState !== 'idle';
+    const hasWork = fileState !== 'idle' || logoState !== 'idle' || exportState !== 'idle';
     if (needsDiscardConfirmation(workflow, hasWork) && !window.confirm($t('scenario.confirmDiscard'))) return;
     resetSource();
+    resetLogo();
     workflow = null;
     step = 1;
   }
 
   function navigate(next: WorkflowStep) {
-    if (workflow !== 'text') return;
-    if (next === 1 || (next === 2 && file) || (next === 3 && exportUnlocked)) step = next;
+    if (next === 1 || (next === 2 && (workflow === 'text' ? !!file : !!file && !!logoSource)) || (next === 3 && exportUnlocked)) step = next;
   }
 
   function addLayer() { dispatch({ type: 'layer-added', id: crypto.randomUUID(), text: $t('inspector.caption') }); }
@@ -108,7 +181,7 @@
     dispatch({ type: 'layer-selected', id });
     dispatch({ type: 'layer-updated', patch });
   }
-  function openExport() { if (editorReady) { exportUnlocked = true; step = 3; } }
+  function openExport() { if (readyToExport) { exportUnlocked = true; step = 3; } }
 
   function confirmTrim(trim: TrimWindow) {
     const remountPreview = trimRequired;
@@ -134,7 +207,7 @@
   }
 
   async function exportVideo(nextPreset = preset) {
-    if (!file || !editorReady) return;
+    if (!file || !readyToExport) return;
     const attempt = ++exportAttempt;
     worker?.terminate(); stopTimer();
     exportState = 'exporting'; progress = 0; elapsed = 0; error = '';
@@ -178,7 +251,8 @@
     };
     const request: ExportRequest = {
       type: 'export', file, preset: nextPreset,
-      layers: project.layers.map(({ id: _id, kind: _kind, ...layer }) => layer),
+      layers: workflow === 'text' ? project.layers.map(({ id: _id, kind: _kind, ...layer }) => layer) : [],
+      logo: workflow === 'logo' ? logoSource : undefined,
       trim: project.trim,
       output: temporaryOutput.handle,
     };
@@ -232,11 +306,11 @@
   <header class="app-header">
     <div class="header-context">
       <button class="brand" aria-label={$t('brand.home')} onclick={returnToWorkflowChoice}><span class="brand-mark">k</span><span><b>klex</b><small>{$t('brand.tagline')}</small></span></button>
-      {#if workflow === 'text' && file}<div class="project-file"><span></span><p>{file.name}<small>{formatDuration(project.duration)} · {$t('layer.count', { count: project.layers.length })}</small></p></div>{/if}
+      {#if workflow && file}<div class="project-file"><span></span><p>{file.name}<small>{formatDuration(project.duration)} · {workflow === 'text' ? $t('layer.count', { count: project.layers.length }) : logoFile?.name}</small></p></div>{/if}
     </div>
     <div class="header-actions">
       <label class="language-picker"><span class="sr-only">{$t('language.label')}</span><select aria-label={$t('language.label')} value={$locale} onchange={chooseLocale}>{#each languages as language}<option value={language.code}>{language.name}</option>{/each}</select></label>
-      {#if workflow === 'text' && step === 2 && file}<button class="primary header-export" disabled={!editorReady} onclick={openExport}>{$t('header.export')} <b>→</b></button>{/if}
+      {#if workflow && step === 2 && file}<button class="primary header-export" disabled={!readyToExport} onclick={openExport}>{$t('header.export')} <b>→</b></button>{/if}
     </div>
   </header>
 
@@ -267,14 +341,54 @@
       </div>
       <div class="privacy-note"><span>✦</span><p><strong>{$t('privacy.title')}</strong><br />{$t('privacy.body')}</p></div>
     </section>
-  {:else if workflow === 'logo'}
-    <section class="logo-flow-step step-view">
-      <div class="hero-copy">
-        <span class="eyebrow">{$t('scenario.logo.meta')}</span>
-        <h1>{$t('scenario.logo.title')}</h1>
-        <p>{$t('scenario.logo.description')}</p>
+  {:else if workflow === 'logo' && step === 1}
+    <section class="logo-files-step step-view">
+      <div class="hero-copy logo-files-copy">
+        <span class="eyebrow">{$t('logo.filesEyebrow')}</span>
+        <h1>{$t('logo.filesTitle')}</h1>
+        <p>{$t('logo.filesDescription')}</p>
       </div>
+      <div class="logo-file-grid">
+        <div class="file-picker">
+          <span class="kicker">{$t('logo.imageLabel')}</span>
+          <label class:loading={logoState === 'validating'} class:ready={logoState === 'ready'} class="dropzone logo-dropzone" ondragover={(event) => event.preventDefault()} ondrop={dropLogoFile}>
+            <input type="file" accept="image/png,image/webp,image/jpeg,.png,.webp,.jpg,.jpeg" onchange={selectLogoFile} disabled={logoState === 'validating'} />
+            <span class="upload-icon">◇</span><strong>{$t(logoState === 'ready' ? 'logo.selected' : 'logo.imageDrop')}</strong><p>{logoFile?.name ?? $t('logo.imageHint')}</p>
+            <div><span>{$t('logo.imageLimits')}</span></div>
+          </label>
+        </div>
+        <div class="file-picker">
+          <span class="kicker">{$t('logo.videoLabel')}</span>
+          <label class:loading={fileState === 'validating'} class:ready={fileState === 'ready'} class="dropzone logo-dropzone" ondragover={(event) => event.preventDefault()} ondrop={dropFile}>
+            <input type="file" accept="video/mp4,video/quicktime,.mp4,.mov" onchange={selectFile} disabled={fileState === 'validating'} />
+            <span class="upload-icon">↑</span><strong>{$t(fileState === 'ready' ? 'logo.selected' : 'logo.videoDrop')}</strong><p>{file?.name ?? $t('logo.videoHint')}</p>
+            <div><span>{$t('logo.videoLimits', { seconds: MAX_TRIM_DURATION })}</span></div>
+          </label>
+        </div>
+      </div>
+      {#if (fileState === 'error' || logoState === 'error') && error}<div class="notice error" role="alert">{$t(error, { seconds: MAX_TRIM_DURATION })}</div>{/if}
+      <div class="privacy-note"><span>✦</span><p><strong>{$t('privacy.title')}</strong><br />{$t('privacy.body')}</p></div>
       <button class="secondary workflow-back" onclick={returnToWorkflowChoice}>← {$t('brand.home')}</button>
+    </section>
+  {:else if workflow === 'logo' && step === 2 && file && sourceUrl && sourceMetadata && logoSource && logoUrl}
+    <section class="logo-editor-step step-view">
+      <div class="step-title"><div><span class="eyebrow">{$t('logo.previewEyebrow')}</span><h1>{$t('logo.previewTitle')}</h1><p>{$t('logo.previewDescription')}</p></div></div>
+      <div class="logo-workspace">
+        {#key `${sourceUrl}:${logoUrl}`}
+          <LogoStage {sourceUrl} {logoUrl} videoWidth={sourceMetadata.width} videoHeight={sourceMetadata.height} logo={logoSource} onReady={() => previewReady = true} />
+        {/key}
+        <section class="logo-defaults card">
+          <span class="kicker">{$t('logo.defaults')}</span>
+          <dl>
+            <div><dt>{$t('logo.anchor')}</dt><dd>{$t('logo.anchorBottomRight')}</dd></div>
+            <div><dt>{$t('logo.size')}</dt><dd>20%</dd></div>
+            <div><dt>{$t('logo.safeMargin')}</dt><dd>5%</dd></div>
+            <div><dt>{$t('logo.opacity')}</dt><dd>100%</dd></div>
+          </dl>
+          <p>{$t(previewReady ? 'editor.previewReady' : 'editor.previewPreparing')}</p>
+        </section>
+      </div>
+      <footer class="step-actions"><button class="secondary" onclick={() => navigate(1)}>← {$t('logo.replaceFiles')}</button><div><span class:ready={logoEditorReady}>{$t(logoEditorReady ? 'editor.previewReady' : 'editor.previewPreparing')}</span></div></footer>
     </section>
   {:else if step === 1}
     <section class="upload-step step-view">
@@ -316,7 +430,7 @@
   {:else if step === 3 && file}
     <section class="export-step step-view">
       <div class="export-layout">
-        <div class="export-copy"><span class="eyebrow">{$t('export.finalStep')}</span><h1>{$t('export.ready')}</h1><p>{$t('export.description')}</p><div class="summary card"><div><span>{$t('export.file')}</span><strong>{file.name}</strong></div><div><span>{$t('export.clip')}</span><strong>{$t('editor.seconds', { value: `${project.trim.trimIn.toFixed(1)}—${project.trim.trimOut.toFixed(1)}` })}</strong></div><div><span>{$t('export.composition')}</span><strong>{$t('layer.count', { count: project.layers.length })}</strong></div></div></div>
+        <div class="export-copy"><span class="eyebrow">{$t('export.finalStep')}</span><h1>{$t('export.ready')}</h1><p>{$t('export.description')}</p><div class="summary card"><div><span>{$t('export.file')}</span><strong>{file.name}</strong></div><div><span>{$t('export.clip')}</span><strong>{workflow === 'logo' ? $t('logo.fullVideo') : $t('editor.seconds', { value: `${project.trim.trimIn.toFixed(1)}—${project.trim.trimOut.toFixed(1)}` })}</strong></div><div><span>{$t('export.composition')}</span><strong>{workflow === 'logo' ? logoFile?.name : $t('layer.count', { count: project.layers.length })}</strong></div></div></div>
         <section class="preset-panel card"><span class="kicker">{$t('export.quality')}</span><h2>{$t('export.chooseSize')}</h2><div class="preset-list"><button class:active={preset === 'high'} onclick={() => preset = 'high'}><span class="radio"></span><span><strong>{$t('export.high')}</strong><small>{$t('export.highDetail')}</small></span><em>{$t('export.best')}</em></button><button class:active={preset === 'standard'} onclick={() => preset = 'standard'}><span class="radio"></span><span><strong>{$t('export.standard')}</strong><small>{$t('export.standardDetail')}</small></span><em>{$t('export.balance')}</em></button><button class:active={preset === 'light'} onclick={() => preset = 'light'}><span class="radio"></span><span><strong>{$t('export.light')}</strong><small>{$t('export.lightDetail')}</small></span><em>{$t('export.fast')}</em></button></div>{#if unsupportedAudio}<div class="notice warning">{$t('error.audio')}</div>{/if}{#if exportState === 'error' && error}<div class="notice error">{$t(error)}</div>{/if}{#if exportState === 'done'}<div class="notice success">{$t('export.saved')}</div>{/if}<button class="export-button" onclick={() => exportVideo()} disabled={exportState === 'exporting'}><span>{$t('export.button')}</span><b>→</b></button>{#if exportState === 'error'}<button class="retry" onclick={() => exportVideo('light')}>{$t('export.retry')}</button>{/if}</section>
       </div>
       <footer class="step-actions"><button class="secondary" onclick={() => navigate(2)}>← {$t('export.back')}</button></footer>
@@ -324,7 +438,7 @@
   {/if}
 </main>
 
-{#if step === 2 && file && sourceUrl && trimRequired}
+{#if workflow === 'text' && step === 2 && file && sourceUrl && trimRequired}
   <div class="trim-gate" role="dialog" aria-modal="true" aria-labelledby="trim-gate-title">
     <div class="trim-gate-dialog">
       <div class="trim-gate-copy"><span class="eyebrow">{$t('trim.required')}</span><h2 id="trim-gate-title">{$t('trim.tooLong')}</h2><p>{$t('trim.choose', { seconds: MAX_TRIM_DURATION })}</p></div>

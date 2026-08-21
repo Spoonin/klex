@@ -30,6 +30,25 @@ describe('video renderer', () => {
 
     expect(gl.uniform1i).toHaveBeenCalledWith('videoRotation', 1);
   });
+
+  it('composites a transparent Logo with the shared default geometry', () => {
+    vi.stubGlobal('OffscreenCanvas', FakeRasterCanvas);
+    const gl = fakeWebGl();
+    const canvas = { width: 1080, height: 1920, getContext: () => gl } as unknown as OffscreenCanvas;
+    const image = { width: 1000, height: 500, close() {} } as ImageBitmap;
+
+    const renderer = createVideoRenderer(canvas, [], 0, {
+      image, width: image.width, height: image.height,
+      settings: { anchor: 'bottom-right', size: 0.2, safeMargin: 0.05, opacity: 1, offsetX: 0, offsetY: 0 },
+    });
+    renderer.draw({} as VideoFrame, 0);
+
+    expect(gl.drawArrays).toHaveBeenCalledTimes(2);
+    expect(gl.uniform2f).toHaveBeenCalledWith('labelOrigin', 0.75, 0.915625);
+    expect(gl.uniform2f).toHaveBeenCalledWith('labelSize', 0.2, 0.05625);
+    expect(gl.uniform1f).toHaveBeenCalledWith('labelOpacity', 1);
+    renderer.close();
+  });
 });
 
 class FakeRasterCanvas {
@@ -60,12 +79,14 @@ function fakeWebGl() {
     getProgramInfoLog: () => '', drawArrays: vi.fn(), bindVertexArray() {}, bindBuffer() {},
     bufferData() {}, enableVertexAttribArray() {}, vertexAttribPointer() {}, shaderSource() {},
     compileShader() {}, attachShader() {}, linkProgram() {}, activeTexture() {}, bindTexture() {},
-    texParameteri() {}, texImage2D() {}, useProgram() {}, uniform1i: vi.fn(), uniform1f() {},
-    uniform2f() {}, disable() {}, enable() {}, blendFunc() {}, deleteTexture() {},
+    texParameteri() {}, texImage2D() {}, useProgram() {}, uniform1i: vi.fn(), uniform1f: vi.fn(),
+    uniform2f: vi.fn(), disable() {}, enable() {}, blendFunc() {}, deleteTexture() {},
     deleteProgram() {}, deleteVertexArray() {},
   });
   return gl as unknown as WebGL2RenderingContext & {
     drawArrays: ReturnType<typeof vi.fn>;
     uniform1i: ReturnType<typeof vi.fn>;
+    uniform1f: ReturnType<typeof vi.fn>;
+    uniform2f: ReturnType<typeof vi.fn>;
   };
 }

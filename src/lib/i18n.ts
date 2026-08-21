@@ -442,7 +442,74 @@ const scenarioCatalogs: Record<Locale, ScenarioMessages> = {
   },
 };
 
-export type MessageKey = BaseMessageKey | ScenarioMessageKey;
+const logoEn = {
+  'logo.filesEyebrow': 'Logo workflow · step 1',
+  'logo.filesTitle': 'Choose a Logo and video',
+  'logo.filesDescription': 'Both files stay in this browser. We check them before opening the preview.',
+  'logo.imageLabel': 'Logo image',
+  'logo.videoLabel': 'Source video',
+  'logo.imageDrop': 'Drop a Logo here',
+  'logo.imageHint': 'or click to choose an image',
+  'logo.imageLimits': 'PNG, WebP or JPEG · up to 20 MB · 4096 px',
+  'logo.videoDrop': 'Drop a video here',
+  'logo.videoHint': 'or click to choose a video',
+  'logo.videoLimits': 'MP4 or MOV · up to 4K · up to {seconds}s',
+  'logo.selected': 'Selected',
+  'logo.previewAlt': 'Selected Logo',
+  'logo.previewEyebrow': 'Logo workflow · step 2',
+  'logo.previewTitle': 'Default position',
+  'logo.previewDescription': 'The real video preview uses the same geometry as the MP4 export.',
+  'logo.defaults': 'Logo defaults',
+  'logo.anchor': 'Anchor',
+  'logo.anchorBottomRight': 'Bottom right',
+  'logo.size': 'Size',
+  'logo.safeMargin': 'Safe Margin',
+  'logo.opacity': 'Opacity',
+  'logo.replaceFiles': 'Replace files',
+  'logo.fullVideo': 'Full video',
+  'error.logoType': 'The Logo must be an encoded PNG, WebP or JPEG image.',
+  'error.logoSize': 'The Logo exceeds the 20 MB file-size limit.',
+  'error.logoDimensions': 'The Logo exceeds the 4096 px limit on one or both sides.',
+  'error.logoDecode': 'The Logo image is damaged or cannot be decoded by this browser.',
+  'error.logoVideoDuration': 'Logo videos must be no longer than {seconds} seconds.',
+} as const satisfies Record<string, Message>;
+
+type LogoMessageKey = keyof typeof logoEn;
+type LogoMessages = Record<LogoMessageKey, Message>;
+
+const logoRu: LogoMessages = {
+  'logo.filesEyebrow': 'Сценарий Логотипа · шаг 1',
+  'logo.filesTitle': 'Выберите Логотип и видео',
+  'logo.filesDescription': 'Оба файла останутся в этом браузере. Перед предпросмотром мы проверим их.',
+  'logo.imageLabel': 'Изображение Логотипа',
+  'logo.videoLabel': 'Исходное видео',
+  'logo.imageDrop': 'Перетащите Логотип сюда',
+  'logo.imageHint': 'или нажмите, чтобы выбрать изображение',
+  'logo.imageLimits': 'PNG, WebP или JPEG · до 20 МБ · до 4096 px',
+  'logo.videoDrop': 'Перетащите видео сюда',
+  'logo.videoHint': 'или нажмите, чтобы выбрать видео',
+  'logo.videoLimits': 'MP4 или MOV · до 4K · до {seconds}с',
+  'logo.selected': 'Выбрано',
+  'logo.previewAlt': 'Выбранный Логотип',
+  'logo.previewEyebrow': 'Сценарий Логотипа · шаг 2',
+  'logo.previewTitle': 'Положение по умолчанию',
+  'logo.previewDescription': 'Реальный предпросмотр использует ту же геометрию, что и экспорт MP4.',
+  'logo.defaults': 'Настройки Логотипа по умолчанию',
+  'logo.anchor': 'Якорь',
+  'logo.anchorBottomRight': 'Нижний правый',
+  'logo.size': 'Размер',
+  'logo.safeMargin': 'Безопасный отступ',
+  'logo.opacity': 'Непрозрачность',
+  'logo.replaceFiles': 'Заменить файлы',
+  'logo.fullVideo': 'Полное видео',
+  'error.logoType': 'Логотип должен быть изображением в формате PNG, WebP или JPEG.',
+  'error.logoSize': 'Размер файла Логотипа превышает 20 МБ.',
+  'error.logoDimensions': 'Одна или обе стороны Логотипа превышают 4096 px.',
+  'error.logoDecode': 'Логотип повреждён или не декодируется этим браузером.',
+  'error.logoVideoDuration': 'Видео для Логотипа должно быть не длиннее {seconds} секунд.',
+};
+
+export type MessageKey = BaseMessageKey | ScenarioMessageKey | LogoMessageKey;
 type Messages = Record<MessageKey, Message>;
 
 const baseCatalogs: Record<Locale, BaseMessages> = { en, es, zh, hi, ar, pt, bn, ru, ja, fr, de, id, tr, ur, pl };
@@ -463,8 +530,14 @@ const storageErrors: Record<Locale, string> = {
   ur: 'یہ براؤزر ایکسپورٹ کے لیے درکار عارضی اسٹوریج فراہم نہیں کر سکتا۔',
   pl: 'Ta przeglądarka nie udostępnia pamięci tymczasowej wymaganej do eksportu.',
 };
+const logoCatalogs: Partial<Record<Locale, LogoMessages>> = { en: logoEn, ru: logoRu };
 const catalogs = languages.reduce<Record<Locale, Messages>>((result, { code }) => {
-  result[code] = { ...baseCatalogs[code], ...scenarioCatalogs[code], 'error.storage': storageErrors[code] };
+  result[code] = {
+    ...baseCatalogs[code],
+    ...scenarioCatalogs[code],
+    ...(logoCatalogs[code] ?? logoEn),
+    'error.storage': storageErrors[code],
+  };
   return result;
 }, {} as Record<Locale, Messages>);
 const rtlLocales = new Set<Locale>(['ar', 'ur']);

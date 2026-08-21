@@ -1,5 +1,6 @@
 import { compositionAt } from './composition';
 import type { LayerStyle } from './layer';
+import { logoPlacement, type LogoSettings } from './logo';
 import { rasterizeLayer } from './rasterizer';
 
 export type VideoRenderer = {
@@ -16,8 +17,20 @@ type LayerTexture = {
 
 export type VideoRotation = 0 | 90 | 180 | 270;
 
+export type RenderLogo = {
+  image: ImageBitmap;
+  width: number;
+  height: number;
+  settings: LogoSettings;
+};
+
 /** WebGL adapter that composites every visible Layer over a decoded frame. */
-export function createVideoRenderer(canvas: OffscreenCanvas, layers: readonly LayerStyle[], rotation: VideoRotation = 0): VideoRenderer {
+export function createVideoRenderer(
+  canvas: OffscreenCanvas,
+  layers: readonly LayerStyle[],
+  rotation: VideoRotation = 0,
+  logo?: RenderLogo,
+): VideoRenderer {
   const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true, alpha: false });
   if (!gl) throw new Error('WebGL2 is unavailable.');
 
@@ -26,6 +39,8 @@ export function createVideoRenderer(canvas: OffscreenCanvas, layers: readonly La
   const layerProgram = programFor(gl, LAYER_VERTEX_SHADER, LAYER_FRAGMENT_SHADER);
   const videoTexture = createTexture(gl, gl.TEXTURE0);
   const layerTextures = new Map(layers.map((layer) => [layer, rasterizedTexture(gl, canvas, layer)]));
+  const logoTexture = logo ? imageTexture(gl, logo.image) : undefined;
+  const logoGeometry = logo ? logoPlacement(logo, canvas, logo.settings) : undefined;
 
   gl.bindVertexArray(vertexArray);
   gl.useProgram(videoProgram);
@@ -57,15 +72,29 @@ export function createVideoRenderer(canvas: OffscreenCanvas, layers: readonly La
         gl.uniform1f(gl.getUniformLocation(layerProgram, 'labelOpacity'), opacity);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
+      if (logo && logoTexture && logoGeometry) {
+        gl.bindTexture(gl.TEXTURE_2D, logoTexture);
+        gl.uniform2f(gl.getUniformLocation(layerProgram, 'labelOrigin'), logoGeometry.left, logoGeometry.top);
+        gl.uniform2f(gl.getUniformLocation(layerProgram, 'labelSize'), logoGeometry.width, logoGeometry.height);
+        gl.uniform1f(gl.getUniformLocation(layerProgram, 'labelOpacity'), logo.settings.opacity);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
     },
     close() {
       gl.deleteTexture(videoTexture);
+      if (logoTexture) gl.deleteTexture(logoTexture);
       for (const item of layerTextures.values()) gl.deleteTexture(item.texture);
       gl.deleteProgram(videoProgram);
       gl.deleteProgram(layerProgram);
       gl.deleteVertexArray(vertexArray);
     },
   };
+}
+
+function imageTexture(gl: WebGL2RenderingContext, image: ImageBitmap) {
+  const texture = createTexture(gl, gl.TEXTURE0);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  return texture;
 }
 
 function rasterizedTexture(gl: WebGL2RenderingContext, canvas: OffscreenCanvas, layer: LayerStyle): LayerTexture {

@@ -1,11 +1,12 @@
 export type ExportPreset = 'high' | 'standard' | 'light';
-export type WorkerErrorCode = 'webCodecs' | 'container' | 'noVideo' | 'videoCodec' | 'resolution' | 'duration' | 'capabilities' | 'storage' | 'decoder' | 'encoder' | 'generic';
+export type WorkerErrorCode = 'webCodecs' | 'container' | 'noVideo' | 'videoCodec' | 'resolution' | 'duration' | 'capabilities' | 'storage' | 'decoder' | 'encoder' | 'logoDecode' | 'generic';
 
 export type ExportRequest = {
   type: 'export';
   file: File;
   preset: ExportPreset;
   layers: import('./layer').LayerStyle[];
+  logo?: import('./logo').LogoSource;
   trim: import('./trim').TrimWindow;
   output: FileSystemFileHandle;
 };

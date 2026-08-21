@@ -78,6 +78,26 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .scenario-route b { color: var(--card-accent); font-size: 1.1rem; }
 .logo-flow-step { width: min(100%, 720px); min-height: 430px; margin: 40px auto 0; display: grid; align-content: center; justify-items: center; text-align: center; }
 .workflow-back { margin-top: 32px; }
+.logo-files-step { width: min(100%, 920px); margin: 20px auto 0; text-align: center; }
+.logo-files-copy h1 { font-size: clamp(2.2rem, 5vw, 4.2rem); }
+.logo-file-grid { margin-top: 34px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; text-align: left; }
+.file-picker { min-width: 0; }
+.file-picker > .kicker { margin-left: 8px; }
+.logo-dropzone { min-height: 225px; margin-top: 9px; padding: 20px; text-align: center; }
+.logo-dropzone.ready { border-color: color-mix(in srgb, var(--signal) 55%, #4d5260); background: rgb(223 247 117 / .04); }
+.logo-dropzone p { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logo-dropzone > div { justify-content: center; }
+.logo-files-step > .notice { max-width: 620px; margin: 18px auto 0; }
+.logo-editor-step { width: min(100%, 920px); margin: 20px auto 0; }
+.logo-workspace { display: grid; grid-template-columns: minmax(280px, 520px) minmax(260px, 1fr); gap: 24px; align-items: center; }
+.stage.logo-stage { width: 100%; height: auto; max-height: 68vh; margin: auto; }
+.logo-stage img { position: absolute; z-index: 2; display: block; object-fit: contain; pointer-events: none; }
+.logo-defaults { padding: 22px; }
+.logo-defaults dl { margin: 17px 0 0; }
+.logo-defaults dl div { padding: 12px 0; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.logo-defaults dt { color: var(--muted); font-size: .7rem; }
+.logo-defaults dd { margin: 0; color: #eef0f4; font-size: .76rem; font-weight: 800; }
+.logo-defaults > p { margin-top: 18px; color: var(--muted); font-size: .65rem; }
 .upload-step { width: min(100%, 760px); margin: 20px auto 0; }
 .dropzone { min-height: 265px; margin-top: 38px; border: 1px dashed #4d5260; border-radius: 24px; display: flex; align-items: center; flex-direction: column; justify-content: center; position: relative; overflow: hidden; background: linear-gradient(145deg, rgb(255 255 255 / .025), transparent); cursor: pointer; transition: border-color .2s, background .2s, transform .2s; }
 .dropzone:hover { border-color: var(--accent); background: rgb(185 168 255 / .045); transform: translateY(-2px); }
@@ -292,6 +312,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   .export-layout { grid-template-columns: 1fr; gap: 28px; }
   .export-copy { text-align: center; }
   .export-copy > p { margin-inline: auto; }
+  .logo-workspace { grid-template-columns: 1fr; }
+  .logo-preview { width: min(100%, 520px); margin: auto; }
 }
 
 @media (max-width: 560px) {
@@ -317,6 +339,10 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   .scenario-card > strong { font-size: 1.3rem; }
   .scenario-route { padding-top: 18px; }
   .logo-flow-step { min-height: 340px; margin-top: 10px; }
+  .logo-file-grid { margin-top: 24px; grid-template-columns: 1fr; }
+  .logo-dropzone { min-height: 190px; margin-top: 7px; }
+  .logo-editor-step .step-title { text-align: center; align-items: center; }
+  .logo-editor-step .step-title p { max-width: 430px; }
   .dropzone { min-height: 235px; margin-top: 28px; }
   .dropzone > div { gap: 5px; }
   .dropzone > div span { padding-inline: 6px; font-size: .5rem; }

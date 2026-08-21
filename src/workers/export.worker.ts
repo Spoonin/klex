@@ -51,7 +51,7 @@ async function validateFile({ file }: ValidateRequest) {
   }
 }
 
-async function exportFile({ file, preset, layers, trim, output: outputHandle }: ExportRequest) {
+async function exportFile({ file, preset, layers, logo, trim, output: outputHandle }: ExportRequest) {
   if (!('OffscreenCanvas' in self) || !('VideoDecoder' in self) || !('VideoEncoder' in self)) {
     throw new WorkerFailure('capabilities');
   }
@@ -62,6 +62,7 @@ async function exportFile({ file, preset, layers, trim, output: outputHandle }: 
   let decoder: VideoDecoder | undefined;
   let encoder: VideoEncoder | undefined;
   let renderer: VideoRenderer | undefined;
+  let logoImage: ImageBitmap | undefined;
   try {
     const videoTrack = await input.getPrimaryVideoTrack();
     if (!videoTrack) throw new WorkerFailure('noVideo');
@@ -81,7 +82,18 @@ async function exportFile({ file, preset, layers, trim, output: outputHandle }: 
     const { width, height } = outputSize(displayWidth, displayHeight, preset);
     const encoderConfig = await supportedEncoderConfig(width, height, preset);
     const canvas = new OffscreenCanvas(width, height);
-    renderer = createVideoRenderer(canvas, layers, rotation);
+    if (logo) {
+      try {
+        logoImage = await createImageBitmap(logo.file);
+      } catch {
+        throw new WorkerFailure('logoDecode');
+      }
+    }
+    renderer = createVideoRenderer(canvas, layers, rotation, logo && logoImage
+      ? { image: logoImage, width: logo.width, height: logo.height, settings: logo.settings }
+      : undefined);
+    logoImage?.close();
+    logoImage = undefined;
     let writable: FileSystemWritableFileStream;
     try {
       writable = await outputHandle.createWritable();
@@ -172,6 +184,7 @@ async function exportFile({ file, preset, layers, trim, output: outputHandle }: 
     if (decoder?.state !== 'closed') decoder?.close();
     if (encoder?.state !== 'closed') encoder?.close();
     renderer?.close();
+    logoImage?.close();
     input.dispose();
   }
 }
