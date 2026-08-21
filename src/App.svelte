@@ -1,11 +1,13 @@
 <script lang="ts">
   import LayerInspector from './lib/components/LayerInspector.svelte';
+  import BatchExportProgress from './lib/components/BatchExportProgress.svelte';
   import LogoInspector from './lib/components/LogoInspector.svelte';
   import LogoStage from './lib/components/LogoStage.svelte';
   import StepIndicator from './lib/components/StepIndicator.svelte';
   import VideoBatchList from './lib/components/VideoBatchList.svelte';
   import VideoStage from './lib/components/VideoStage.svelte';
   import { canExportProject, createEditorProject, getActiveLayer, updateEditorProject, type EditorProjectAction } from './lib/editor-project';
+  import { batchExportProgress, completeBatchExportItem, createBatchExportQueue, createBatchExportRequest, resolveBatchExportLogoSource, startNextBatchExportItem, updateBatchExportProgress, type BatchExportItem } from './lib/batch-export';
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
   import type { LayerStyle } from './lib/layer';
@@ -16,6 +18,7 @@
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
+  type BatchExportResult = { item: BatchExportItem; file: File; output: TemporaryOutput };
   const MAX_CONCURRENT_VALIDATIONS = 2;
   const BATCH_DEFAULT_FRAME = { width: 1000, height: 1000 } as const;
 
@@ -38,6 +41,9 @@
   let worker: Worker | undefined;
   let trimRequired = false;
   let temporaryOutput: TemporaryOutput | undefined;
+  let batchExportQueue: BatchExportItem[] = [];
+  let batchExportResults: BatchExportResult[] = [];
+  let cancelWorkerTask: (() => void) | undefined;
   let exportAttempt = 0;
   let logoFile: File | null = null;
   let logoUrl = '';
@@ -54,7 +60,7 @@
 
   $: activeLayer = getActiveLayer(project);
   $: editorReady = workflow === 'text' && previewReady && !trimRequired && canExportProject(project);
-  $: logoEditorReady = workflow === 'logo' && previewReady && !!file && !!logoSource && !!sourceMetadata;
+  $: logoEditorReady = workflow === 'logo' && previewReady && !!file && !!logoSource && !!sourceMetadata && validatingVideoCount === 0;
   $: readyToExport = editorReady || logoEditorReady;
   $: supportedBatch = supportedVideoBatchItems(videoBatch);
   $: batchDefaultAvailable = hasLogoBatchDefault(videoBatch);
@@ -87,6 +93,7 @@
     ? videoBatchPlayhead(videoBatchPlayheads, selectedBatchItem.id, selectedBatchItem.metadata.duration)
     : 0;
   $: validatingVideoCount = videoBatch.filter(({ status }) => status === 'validating').length;
+  $: batchHasUnsupportedAudio = supportedBatch.some(({ metadata }) => metadata?.unsupportedAudio);
 
   function dispatch(action: EditorProjectAction) { project = updateEditorProject(project, action); }
 
@@ -284,14 +291,18 @@
   function invalidateExport(terminateWorker = true) {
     exportAttempt += 1;
     if (terminateWorker) {
+      cancelWorkerTask?.();
+      cancelWorkerTask = undefined;
       worker?.terminate();
       worker = undefined;
     }
     void cleanupTemporaryOutput();
+    void cleanupBatchExportResults();
     stopTimer();
     exportUnlocked = false;
     exportState = 'idle';
     progress = 0;
+    batchExportQueue = [];
     elapsed = 0;
     error = '';
   }
@@ -395,6 +406,14 @@
   }
 
   async function exportVideo(nextPreset = preset) {
+    if (workflow === 'logo') {
+      await exportLogoBatch(nextPreset);
+      return;
+    }
+    await exportSingleVideo(nextPreset);
+  }
+
+  async function exportSingleVideo(nextPreset = preset) {
     if (!file || !readyToExport) return;
     const attempt = ++exportAttempt;
     worker?.terminate(); stopTimer();
@@ -425,7 +444,7 @@
         progress = 100; stopTimer();
         const completedOutput = temporaryOutput;
         temporaryOutput = undefined;
-        save(data.file, completedOutput);
+        save(data.file, completedOutput, file);
         exportState = 'done'; worker?.terminate(); worker = undefined;
       } else if (data.type === 'error') {
         stopTimer(); error = errorKey(data.code); exportState = 'error'; worker?.terminate(); worker = undefined;
@@ -452,11 +471,130 @@
     }
   }
 
-  function save(result: File, output: TemporaryOutput | undefined) {
+  async function exportLogoBatch(nextPreset: ExportPreset) {
+    if (!logoFile || !logoMetadata || !readyToExport || validatingVideoCount > 0) return;
+    const batchLogoFile = logoFile;
+    const batchLogoMetadata = logoMetadata;
+    const attempt = ++exportAttempt;
+    cancelWorkerTask?.(); cancelWorkerTask = undefined;
+    worker?.terminate(); worker = undefined; stopTimer();
+    exportState = 'exporting'; progress = 0; elapsed = 0; error = '';
+    const currentCleaned = await cleanupTemporaryOutput();
+    const resultsCleaned = await cleanupBatchExportResults();
+    if (!currentCleaned || !resultsCleaned) {
+      exportState = 'error';
+      return;
+    }
+    if (attempt !== exportAttempt) return;
+
+    batchExportQueue = createBatchExportQueue(videoBatch);
+    const exportItems = batchExportQueue.map((item) => ({
+      item,
+      logo: resolveBatchExportLogoSource(
+        item,
+        batchLogoFile,
+        batchLogoMetadata,
+        logoBatchDefault,
+        logoVideoOverrides,
+      ),
+    }));
+    exportTimer = setInterval(() => elapsed += 1, 1000);
+
+    for (const { item, logo } of exportItems) {
+      if (attempt !== exportAttempt) return;
+      batchExportQueue = startNextBatchExportItem(batchExportQueue);
+      const result = await exportLogoBatchItem(item, logo, nextPreset, attempt);
+      if (attempt !== exportAttempt || result.type === 'cancelled') return;
+      if (result.type === 'error') {
+        stopTimer();
+        error = errorKey(result.code);
+        exportState = 'error';
+        await cleanupTemporaryOutput();
+        await cleanupBatchExportResults();
+        return;
+      }
+      batchExportResults = [...batchExportResults, { item, file: result.file, output: result.output }];
+      batchExportQueue = completeBatchExportItem(batchExportQueue, item.id);
+      progress = batchExportProgress(batchExportQueue);
+    }
+
+    stopTimer();
+    progress = 100;
+    exportState = 'done';
+    if (batchExportResults.length === 1) {
+      const [result] = batchExportResults;
+      batchExportResults = [];
+      save(result.file, result.output, result.item.file);
+    }
+  }
+
+  async function exportLogoBatchItem(
+    item: BatchExportItem,
+    logo: LogoSource,
+    nextPreset: ExportPreset,
+    attempt: number,
+  ): Promise<
+    | { type: 'complete'; file: File; output: TemporaryOutput }
+    | { type: 'error'; code: WorkerErrorCode }
+    | { type: 'cancelled' }
+  > {
+    try {
+      temporaryOutput = await createTemporaryOutput();
+    } catch (cause) {
+      return {
+        type: 'error',
+        code: cause instanceof TemporaryStorageUnavailableError ? 'storage' : 'generic',
+      };
+    }
+    if (attempt !== exportAttempt) {
+      await cleanupTemporaryOutput();
+      return { type: 'cancelled' };
+    }
+
+    const output = temporaryOutput;
+    worker = new Worker(new URL('./workers/export.worker.ts', import.meta.url), { type: 'module' });
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result:
+        | { type: 'complete'; file: File; output: TemporaryOutput }
+        | { type: 'error'; code: WorkerErrorCode }
+        | { type: 'cancelled' },
+      ) => {
+        if (settled) return;
+        settled = true;
+        cancelWorkerTask = undefined;
+        worker?.terminate();
+        worker = undefined;
+        resolve(result);
+      };
+      cancelWorkerTask = () => finish({ type: 'cancelled' });
+      worker!.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
+        if (attempt !== exportAttempt) return finish({ type: 'cancelled' });
+        if (data.type === 'progress') {
+          batchExportQueue = updateBatchExportProgress(batchExportQueue, item.id, data.completed);
+          progress = batchExportProgress(batchExportQueue);
+        } else if (data.type === 'complete') {
+          temporaryOutput = undefined;
+          finish({ type: 'complete', file: data.file, output });
+        } else if (data.type === 'error') {
+          finish({ type: 'error', code: data.code });
+        }
+      };
+      worker!.onerror = () => finish({ type: 'error', code: 'generic' });
+      const request = createBatchExportRequest(item, nextPreset, logo, output.handle);
+      try {
+        worker!.postMessage(request);
+      } catch {
+        finish({ type: 'error', code: 'storage' });
+      }
+    });
+  }
+
+  function save(result: File, output: TemporaryOutput | undefined, source: File | null) {
     const url = URL.createObjectURL(result);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `${file?.name.replace(/\.[^.]+$/, '') ?? 'klex-export'}-klex.mp4`;
+    anchor.download = `${source?.name.replace(/\.[^.]+$/, '') ?? 'klex-export'}-klex.mp4`;
     anchor.click();
     setTimeout(() => {
       URL.revokeObjectURL(url);
@@ -466,9 +604,11 @@
   function stopTimer() { if (exportTimer) clearInterval(exportTimer); exportTimer = undefined; }
   function cancelExport() {
     exportAttempt += 1;
+    cancelWorkerTask?.(); cancelWorkerTask = undefined;
     worker?.terminate(); worker = undefined;
-    stopTimer(); exportState = 'idle'; progress = 0;
+    stopTimer(); exportState = 'idle'; progress = 0; batchExportQueue = [];
     void cleanupTemporaryOutput();
+    void cleanupBatchExportResults();
   }
   async function cleanupTemporaryOutput() {
     const output = temporaryOutput;
@@ -482,6 +622,24 @@
       error = errorKey('storage');
       return false;
     }
+  }
+  async function cleanupBatchExportResults() {
+    const results = batchExportResults;
+    batchExportResults = [];
+    if (!results.length) return true;
+    const disposed = await Promise.all(results.map(async ({ output }) => {
+      try {
+        await output.dispose();
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+    const failed = results.filter((_, index) => !disposed[index]);
+    if (!failed.length) return true;
+    batchExportResults = failed;
+    error = errorKey('storage');
+    return false;
   }
   function formatDuration(value: number) { return `${Math.floor(value / 60)}:${Math.round(value % 60).toString().padStart(2, '0')}`; }
   function errorKey(code: WorkerErrorCode): MessageKey {
@@ -567,7 +725,7 @@
       {#if logoState === 'error' && error}<div class="notice error" role="alert">{$t(error, { seconds: MAX_TRIM_DURATION })}</div>{/if}
       <div class="batch-actions">
         <span>{$t('logo.batchSupported', { count: supportedBatch.length })}</span>
-        <button class="primary" disabled={!logoSource || supportedBatch.length === 0} onclick={continueLogoBatch}>{$t('logo.batchContinue')} →</button>
+        <button class="primary" disabled={!logoSource || supportedBatch.length === 0 || validatingVideoCount > 0} onclick={continueLogoBatch}>{$t('logo.batchContinue')} →</button>
       </div>
       <div class="privacy-note"><span>✦</span><p><strong>{$t('privacy.title')}</strong><br />{$t('privacy.body')}</p></div>
       <button class="secondary workflow-back" onclick={returnToWorkflowChoice}>← {$t('brand.home')}</button>
@@ -671,8 +829,8 @@
   {:else if step === 3 && file}
     <section class="export-step step-view">
       <div class="export-layout">
-        <div class="export-copy"><span class="eyebrow">{$t('export.finalStep')}</span><h1>{$t('export.ready')}</h1><p>{$t('export.description')}</p><div class="summary card"><div><span>{$t('export.file')}</span><strong>{file.name}</strong></div><div><span>{$t('export.clip')}</span><strong>{workflow === 'logo' ? $t('logo.fullVideo') : $t('editor.seconds', { value: `${project.trim.trimIn.toFixed(1)}—${project.trim.trimOut.toFixed(1)}` })}</strong></div><div><span>{$t('export.composition')}</span><strong>{workflow === 'logo' ? logoFile?.name : $t('layer.count', { count: project.layers.length })}</strong></div></div></div>
-        <section class="preset-panel card"><span class="kicker">{$t('export.quality')}</span><h2>{$t('export.chooseSize')}</h2><div class="preset-list"><button class:active={preset === 'high'} onclick={() => preset = 'high'}><span class="radio"></span><span><strong>{$t('export.high')}</strong><small>{$t('export.highDetail')}</small></span><em>{$t('export.best')}</em></button><button class:active={preset === 'standard'} onclick={() => preset = 'standard'}><span class="radio"></span><span><strong>{$t('export.standard')}</strong><small>{$t('export.standardDetail')}</small></span><em>{$t('export.balance')}</em></button><button class:active={preset === 'light'} onclick={() => preset = 'light'}><span class="radio"></span><span><strong>{$t('export.light')}</strong><small>{$t('export.lightDetail')}</small></span><em>{$t('export.fast')}</em></button></div>{#if unsupportedAudio}<div class="notice warning">{$t('error.audio')}</div>{/if}{#if exportState === 'error' && error}<div class="notice error">{$t(error)}</div>{/if}{#if exportState === 'done'}<div class="notice success">{$t('export.saved')}</div>{/if}<button class="export-button" onclick={() => exportVideo()} disabled={exportState === 'exporting'}><span>{$t('export.button')}</span><b>→</b></button>{#if exportState === 'error'}<button class="retry" onclick={() => exportVideo('light')}>{$t('export.retry')}</button>{/if}</section>
+        <div class="export-copy"><span class="eyebrow">{$t('export.finalStep')}</span><h1>{$t('export.ready')}</h1><p>{$t('export.description')}</p><div class="summary card"><div><span>{$t('export.file')}</span><strong>{workflow === 'logo' ? $t('logo.batchSupported', { count: supportedBatch.length }) : file.name}</strong></div><div><span>{$t('export.clip')}</span><strong>{workflow === 'logo' ? $t('logo.fullVideo') : $t('editor.seconds', { value: `${project.trim.trimIn.toFixed(1)}—${project.trim.trimOut.toFixed(1)}` })}</strong></div><div><span>{$t('export.composition')}</span><strong>{workflow === 'logo' ? logoFile?.name : $t('layer.count', { count: project.layers.length })}</strong></div></div></div>
+        <section class="preset-panel card"><span class="kicker">{$t('export.quality')}</span><h2>{$t('export.chooseSize')}</h2><div class="preset-list"><button class:active={preset === 'high'} onclick={() => preset = 'high'}><span class="radio"></span><span><strong>{$t('export.high')}</strong><small>{$t('export.highDetail')}</small></span><em>{$t('export.best')}</em></button><button class:active={preset === 'standard'} onclick={() => preset = 'standard'}><span class="radio"></span><span><strong>{$t('export.standard')}</strong><small>{$t('export.standardDetail')}</small></span><em>{$t('export.balance')}</em></button><button class:active={preset === 'light'} onclick={() => preset = 'light'}><span class="radio"></span><span><strong>{$t('export.light')}</strong><small>{$t('export.lightDetail')}</small></span><em>{$t('export.fast')}</em></button></div>{#if workflow === 'logo' ? batchHasUnsupportedAudio : unsupportedAudio}<div class="notice warning">{$t('error.audio')}</div>{/if}{#if exportState === 'error' && error}<div class="notice error">{$t(error)}</div>{/if}{#if exportState === 'done'}<div class="notice success">{$t(workflow === 'logo' && supportedBatch.length > 1 ? 'logo.exportComplete' : 'export.saved')}</div>{#if workflow === 'logo'}<BatchExportProgress items={batchExportQueue} />{/if}{/if}<button class="export-button" onclick={() => exportVideo()} disabled={exportState === 'exporting'}><span>{$t('export.button')}</span><b>→</b></button>{#if exportState === 'error'}<button class="retry" onclick={() => exportVideo('light')}>{$t('export.retry')}</button>{/if}</section>
       </div>
       <footer class="step-actions"><button class="secondary" onclick={() => navigate(2)}>← {$t('export.back')}</button></footer>
     </section>
@@ -688,4 +846,4 @@
   </div>
 {/if}
 
-{#if exportState === 'exporting'}<div class="progress-overlay" role="dialog" aria-modal="true" aria-label={$t('progress.label')}><section class="progress-card"><div class="render-orbit"><span></span><b>{progress}%</b></div><span class="eyebrow">{$t('progress.rendering')}</span><h2>{$t('progress.composing')}</h2><p>{$t('progress.elapsed', { seconds: elapsed })}</p><progress value={progress} max="100"></progress><button class="secondary" onclick={cancelExport}>{$t('common.cancel')}</button></section></div>{/if}
+{#if exportState === 'exporting'}<div class="progress-overlay" role="dialog" aria-modal="true" aria-label={$t('progress.label')}><section class="progress-card" class:batch-progress-card={workflow === 'logo'}><div class="render-orbit"><span></span><b>{progress}%</b></div><span class="eyebrow">{$t(workflow === 'logo' ? 'logo.exportOverall' : 'progress.rendering')}</span><h2>{$t('progress.composing')}</h2><p>{$t('progress.elapsed', { seconds: elapsed })}</p>{#if workflow === 'logo'}<BatchExportProgress items={batchExportQueue} />{/if}<progress value={progress} max="100"></progress><button class="secondary" onclick={cancelExport}>{$t('common.cancel')}</button></section></div>{/if}
