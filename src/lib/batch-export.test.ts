@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   batchExportProgress,
+  batchExportDownloadKind,
+  batchExportSummary,
   completeBatchExportItem,
   createBatchExportRequest,
   createBatchExportQueue,
+  failBatchExportItem,
+  processableBatchExportItems,
   resolveBatchExportLogoSource,
   startNextBatchExportItem,
   updateBatchExportProgress,
@@ -30,7 +34,7 @@ function item(id: string, status: VideoBatchItem['status'], duration = 10): Vide
 }
 
 describe('Batch export queue', () => {
-  it('keeps upload order and skips unsupported or unfinished videos', () => {
+  it('keeps upload order, marks unsupported videos as skipped, and omits unfinished videos', () => {
     const queue = createBatchExportQueue([
       item('first', 'supported'),
       item('unsupported', 'error'),
@@ -40,8 +44,49 @@ describe('Batch export queue', () => {
 
     expect(queue.map(({ id, status }) => ({ id, status }))).toEqual([
       { id: 'first', status: 'queued' },
+      { id: 'unsupported', status: 'skipped' },
       { id: 'last', status: 'queued' },
     ]);
+    expect(queue[1].error).toBe('videoCodec');
+    expect(processableBatchExportItems(queue).map(({ id }) => id)).toEqual(['first', 'last']);
+  });
+
+  it('fails only the active video, records its exact reason, and advances to the next video', () => {
+    let queue = createBatchExportQueue([
+      item('first', 'supported', 30),
+      item('second', 'supported', 90),
+    ]);
+    queue = startNextBatchExportItem(queue);
+    queue = failBatchExportItem(queue, 'first', 'decoder');
+
+    expect(queue[0]).toMatchObject({ status: 'error', error: 'decoder', completed: 30 });
+    expect(queue[1]).toMatchObject({ status: 'queued', completed: 0 });
+    expect(batchExportProgress(queue)).toBe(25);
+
+    queue = startNextBatchExportItem(queue);
+    expect(queue.map(({ status }) => status)).toEqual(['error', 'processing']);
+  });
+
+  it('summarises ready, export-error, and validation-skipped videos separately', () => {
+    let queue = createBatchExportQueue([
+      item('ready', 'supported'),
+      item('failed', 'supported'),
+      item('unsupported', 'error'),
+    ]);
+    queue = startNextBatchExportItem(queue);
+    queue = completeBatchExportItem(queue, 'ready');
+    queue = startNextBatchExportItem(queue);
+    queue = failBatchExportItem(queue, 'failed', 'encoder');
+
+    expect(batchExportSummary(queue)).toEqual({ ready: 1, error: 1, skipped: 1 });
+    expect(batchExportProgress(queue)).toBe(100);
+  });
+
+  it('keeps ZIP delivery when only one of multiple processable videos succeeds', () => {
+    expect(batchExportDownloadKind(1, 1)).toBe('mp4');
+    expect(batchExportDownloadKind(2, 1)).toBe('zip');
+    expect(batchExportDownloadKind(3, 2)).toBe('zip');
+    expect(batchExportDownloadKind(2, 0)).toBe('none');
   });
 
   it('allows at most one processing video and advances only after completion', () => {
@@ -74,7 +119,7 @@ describe('Batch export queue', () => {
   });
 
   it('uses the shared preset, a full-duration trim, and the resolved Video Override', () => {
-    const [exportItem] = createBatchExportQueue([item('video', 'supported', 120)]);
+    const [exportItem] = processableBatchExportItems(createBatchExportQueue([item('video', 'supported', 120)]));
     const logoFile = new File([], 'logo.png');
     const logo = resolveBatchExportLogoSource(
       exportItem,

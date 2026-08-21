@@ -8,7 +8,7 @@
   import VideoStage from './lib/components/VideoStage.svelte';
   import { canExportProject, createEditorProject, getActiveLayer, updateEditorProject, type EditorProjectAction } from './lib/editor-project';
   import { createBatchArchiveEntries, writeStoredZip } from './lib/batch-archive';
-  import { batchExportProgress, completeBatchExportItem, createBatchExportQueue, createBatchExportRequest, resolveBatchExportLogoSource, startNextBatchExportItem, updateBatchExportProgress, type BatchExportItem } from './lib/batch-export';
+  import { batchExportDownloadKind, batchExportProgress, batchExportSummary, completeBatchExportItem, createBatchExportQueue, createBatchExportRequest, failBatchExportItem, processableBatchExportItems, resolveBatchExportLogoSource, startNextBatchExportItem, updateBatchExportProgress, type BatchExportItem, type ProcessableBatchExportItem } from './lib/batch-export';
   import { BatchExportStorageUnavailableError, checkBatchExportStorage, type BatchExportStorageCapacity } from './lib/batch-export-storage';
   import type { ExportPreset, ExportRequest, SourceMetadata, WorkerErrorCode, WorkerMessage } from './lib/export-protocol';
   import { languages, locale, setLocale, t, type Locale, type MessageKey } from './lib/i18n';
@@ -20,7 +20,7 @@
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
-  type BatchExportResult = { item: BatchExportItem; file: File; output: TemporaryOutput };
+  type BatchExportResult = { item: ProcessableBatchExportItem; file: File; output: TemporaryOutput };
   type BatchStorageState =
     | { status: 'idle' | 'checking' | 'unavailable' }
     | ({ status: 'available' | 'insufficient' } & BatchExportStorageCapacity);
@@ -102,6 +102,7 @@
     : 0;
   $: validatingVideoCount = videoBatch.filter(({ status }) => status === 'validating').length;
   $: batchHasUnsupportedAudio = supportedBatch.some(({ metadata }) => metadata?.unsupportedAudio);
+  $: batchResultSummary = batchExportSummary(batchExportQueue);
   $: batchStorageSignature = workflow === 'logo'
     ? `${preset}:${supportedBatch.map(({ id, metadata }) => `${id}:${metadata?.duration}:${metadata?.audioBitrate}`).join('|')}`
     : '';
@@ -516,7 +517,7 @@
     if (attempt !== exportAttempt) return;
 
     batchExportQueue = createBatchExportQueue(videoBatch);
-    const exportItems = batchExportQueue.map((item) => ({
+    const exportItems = processableBatchExportItems(batchExportQueue).map((item) => ({
       item,
       logo: resolveBatchExportLogoSource(
         item,
@@ -534,12 +535,10 @@
       const result = await exportLogoBatchItem(item, logo, nextPreset, attempt);
       if (attempt !== exportAttempt || result.type === 'cancelled') return;
       if (result.type === 'error') {
-        stopTimer();
-        error = errorKey(result.code);
-        exportState = 'error';
+        batchExportQueue = failBatchExportItem(batchExportQueue, item.id, result.code);
+        progress = batchExportProgress(batchExportQueue);
         await cleanupTemporaryOutput();
-        await cleanupBatchExportResults();
-        return;
+        continue;
       }
       batchExportResults = [...batchExportResults, { item, file: result.file, output: result.output }];
       batchExportQueue = completeBatchExportItem(batchExportQueue, item.id);
@@ -548,7 +547,13 @@
 
     stopTimer();
     progress = 100;
-    if (batchExportResults.length === 1) {
+    error = '';
+    const downloadKind = batchExportDownloadKind(exportItems.length, batchExportResults.length);
+    if (downloadKind === 'none') {
+      exportState = 'done';
+      return;
+    }
+    if (downloadKind === 'mp4') {
       const [result] = batchExportResults;
       batchExportResults = [];
       save(result.file, result.output, result.item.file);
@@ -595,7 +600,7 @@
   }
 
   async function exportLogoBatchItem(
-    item: BatchExportItem,
+    item: ProcessableBatchExportItem,
     logo: LogoSource,
     nextPreset: ExportPreset,
     attempt: number,
@@ -961,7 +966,16 @@
             <button class="retry" onclick={() => refreshBatchExportStorage(supportedBatchMetadata(supportedBatch), preset)}>{$t('logo.storageRetry')}</button>
           {/if}
           {#if exportState === 'error' && error}<div class="notice error">{$t(error)}</div>{/if}
-          {#if exportState === 'done'}<div class="notice success">{$t(workflow === 'logo' && supportedBatch.length > 1 ? 'logo.exportComplete' : 'export.saved')}</div>{#if workflow === 'logo'}<BatchExportProgress items={batchExportQueue} />{/if}{/if}
+          {#if exportState === 'done'}
+            {#if workflow === 'logo'}
+              <div class:success={batchResultSummary.error === 0 && batchResultSummary.skipped === 0} class:warning={batchResultSummary.ready > 0 && (batchResultSummary.error > 0 || batchResultSummary.skipped > 0)} class:error={batchResultSummary.ready === 0} class="notice" role="status">
+                {$t(batchResultSummary.ready === 0 ? 'logo.exportNone' : batchResultSummary.error > 0 || batchResultSummary.skipped > 0 ? 'logo.exportPartial' : supportedBatch.length > 1 ? 'logo.exportComplete' : 'export.saved')}
+              </div>
+              <BatchExportProgress items={batchExportQueue} showSummary />
+            {:else}
+              <div class="notice success">{$t('export.saved')}</div>
+            {/if}
+          {/if}
           <button class="export-button" onclick={() => exportVideo()} disabled={exportState === 'exporting' || workflow === 'logo' && batchStorageState.status !== 'available'}><span>{$t('export.button')}</span><b>→</b></button>
           {#if exportState === 'error'}<button class="retry" onclick={() => exportVideo('light')}>{$t('export.retry')}</button>{/if}
         </section>
