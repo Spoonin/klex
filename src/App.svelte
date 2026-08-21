@@ -12,7 +12,7 @@
   import { DEFAULT_LOGO_SETTINGS, LogoValidationError, fitLogoSettings, maximumLogoSize, validateLogoFile, type LogoSettings, type LogoSource } from './lib/logo';
   import { createTemporaryOutput, TemporaryStorageUnavailableError, type TemporaryOutput } from './lib/temporary-output';
   import { MAX_TRIM_DURATION, type TrimWindow } from './lib/trim';
-  import { appendVideoBatch, hasLogoBatchDefault, initialLogoBatchEditorTarget, rejectVideoBatchItem, removeVideoBatchItem, seekVideoBatchItem, supportedVideoBatchItems, validateVideoBatchItem, videoBatchPlayhead, type LogoBatchEditorTarget, type VideoBatchItem, type VideoBatchPlayheads } from './lib/video-batch';
+  import { appendVideoBatch, fittedLogoSettingKeys, hasLogoBatchDefault, initialLogoBatchEditorTarget, rejectVideoBatchItem, removeVideoBatchItem, resetVideoLogoOverride, resetVideoLogoOverrideProperty, resolveVideoLogoSettings, seekVideoBatchItem, supportedVideoBatchItems, updateVideoLogoOverride, validateVideoBatchItem, videoBatchPlayhead, type LogoBatchEditorTarget, type LogoSettingKey, type VideoBatchItem, type VideoBatchPlayheads, type VideoLogoOverrides } from './lib/video-batch';
   import { needsDiscardConfirmation, type Workflow, type WorkflowStep } from './lib/workflow';
 
   type ExportState = 'idle' | 'exporting' | 'done' | 'error';
@@ -44,7 +44,8 @@
   let logoMetadata: { width: number; height: number } | null = null;
   let logoState: 'idle' | 'validating' | 'ready' | 'error' = 'idle';
   let logoValidationAttempt = 0;
-  let logoSettings: LogoSettings = { ...DEFAULT_LOGO_SETTINGS };
+  let logoBatchDefault: LogoSettings = { ...DEFAULT_LOGO_SETTINGS };
+  let logoVideoOverrides: VideoLogoOverrides = {};
   let videoBatch: VideoBatchItem[] = [];
   let logoBatchEditorTarget: LogoBatchEditorTarget | undefined;
   let videoBatchPlayheads: VideoBatchPlayheads = {};
@@ -63,11 +64,24 @@
   $: logoEditorFrame = editingBatchDefault
     ? BATCH_DEFAULT_FRAME
     : selectedBatchItem?.metadata ?? sourceMetadata ?? BATCH_DEFAULT_FRAME;
+  $: selectedLogoOverride = selectedBatchItemId ? logoVideoOverrides[selectedBatchItemId] : undefined;
+  $: rawLogoEditorSettings = editingBatchDefault
+    ? logoBatchDefault
+    : resolveVideoLogoSettings(logoBatchDefault, selectedLogoOverride);
   $: logoEditorSettings = logoMetadata
-    ? fitLogoSettings(logoMetadata, logoEditorFrame, logoSettings)
-    : logoSettings;
+    ? fitLogoSettings(logoMetadata, logoEditorFrame, rawLogoEditorSettings)
+    : rawLogoEditorSettings;
+  $: fittedLogoProperties = fittedLogoSettingKeys(rawLogoEditorSettings, logoEditorSettings);
+  $: overriddenLogoProperties = Object.keys(selectedLogoOverride ?? {}) as LogoSettingKey[];
   $: logoSource = logoFile && logoMetadata
     ? { file: logoFile, ...logoMetadata, settings: logoEditorSettings } satisfies LogoSource
+    : undefined;
+  $: exportLogoSource = logoFile && logoMetadata && sourceMetadata
+    ? {
+        file: logoFile,
+        ...logoMetadata,
+        settings: fitLogoSettings(logoMetadata, sourceMetadata, rawLogoEditorSettings),
+      } satisfies LogoSource
     : undefined;
   $: logoPreviewPlayhead = selectedBatchItem?.metadata
     ? videoBatchPlayhead(videoBatchPlayheads, selectedBatchItem.id, selectedBatchItem.metadata.duration)
@@ -191,6 +205,7 @@
     const removedActiveSource = videoBatch.find((item) => item.id === id)?.file === file;
     validationQueue = validationQueue.filter((queuedId) => queuedId !== id);
     videoBatch = removeVideoBatchItem(videoBatch, id);
+    logoVideoOverrides = resetVideoLogoOverride(logoVideoOverrides, id);
     finishBatchValidation(id);
     invalidateExport();
     if (removedActiveSource) resetSource();
@@ -288,7 +303,8 @@
     logoUrl = '';
     logoMetadata = null;
     logoState = 'idle';
-    logoSettings = { ...DEFAULT_LOGO_SETTINGS };
+    logoBatchDefault = { ...DEFAULT_LOGO_SETTINGS };
+    logoVideoOverrides = {};
   }
 
   function chooseWorkflow(next: Workflow) {
@@ -326,7 +342,32 @@
     if (patch.size !== undefined) {
       next.size = Math.min(patch.size, maximumLogoSize(logoMetadata, logoEditorFrame, next));
     }
-    logoSettings = fitLogoSettings(logoMetadata, logoEditorFrame, next);
+    const fitted = fitLogoSettings(logoMetadata, logoEditorFrame, next);
+    if (editingBatchDefault) {
+      logoBatchDefault = fitted;
+      return;
+    }
+    if (!selectedBatchItemId) return;
+    const explicitPatch: Partial<LogoSettings> = {};
+    for (const key of Object.keys(patch) as LogoSettingKey[]) {
+      assignLogoSetting(explicitPatch, key, fitted[key]);
+    }
+    logoVideoOverrides = updateVideoLogoOverride(
+      logoVideoOverrides,
+      selectedBatchItemId,
+      logoBatchDefault,
+      explicitPatch,
+    );
+  }
+  function resetLogoOverrideProperty(key: LogoSettingKey) {
+    if (!selectedBatchItemId) return;
+    invalidateExport();
+    logoVideoOverrides = resetVideoLogoOverrideProperty(logoVideoOverrides, selectedBatchItemId, key);
+  }
+  function resetAllLogoOverrides() {
+    if (!selectedBatchItemId) return;
+    invalidateExport();
+    logoVideoOverrides = resetVideoLogoOverride(logoVideoOverrides, selectedBatchItemId);
   }
   function openExport() { if (readyToExport) { exportUnlocked = true; step = 3; } }
 
@@ -399,7 +440,7 @@
     const request: ExportRequest = {
       type: 'export', file, preset: nextPreset,
       layers: workflow === 'text' ? project.layers.map(({ id: _id, kind: _kind, ...layer }) => layer) : [],
-      logo: workflow === 'logo' ? logoSource : undefined,
+      logo: workflow === 'logo' ? exportLogoSource : undefined,
       trim: project.trim,
       output: temporaryOutput.handle,
     };
@@ -447,6 +488,13 @@
     return code === 'durationLimit' ? 'error.logoVideoDuration' : `error.${code}` as MessageKey;
   }
   function chooseLocale(event: Event) { setLocale((event.currentTarget as HTMLSelectElement).value as Locale); }
+  function assignLogoSetting<K extends LogoSettingKey>(
+    settings: Partial<LogoSettings>,
+    key: K,
+    value: LogoSettings[K],
+  ) {
+    settings[key] = value;
+  }
 </script>
 
 <svelte:head><title>{$t('meta.title')}</title><meta name="theme-color" content="#0b0d10" /></svelte:head>
@@ -569,7 +617,17 @@
             <p>{selectedBatchItem.error ? $t(errorKey(selectedBatchItem.error), { seconds: MAX_TRIM_DURATION }) : $t('logo.batchChecking')}</p>
           </section>
         {/if}
-        <LogoInspector image={logoSource} frame={logoEditorFrame} settings={logoEditorSettings} onChange={updateLogoSettings} />
+        <LogoInspector
+          image={logoSource}
+          frame={logoEditorFrame}
+          settings={logoEditorSettings}
+          onChange={updateLogoSettings}
+          videoOverride={!editingBatchDefault}
+          overridden={overriddenLogoProperties}
+          fitted={fittedLogoProperties}
+          onReset={resetLogoOverrideProperty}
+          onResetAll={resetAllLogoOverrides}
+        />
       </div>
       <footer class="step-actions"><button class="secondary" onclick={() => navigate(1)}>← {$t('logo.replaceFiles')}</button><div><span class:ready={logoEditorReady}>{$t(logoEditorReady ? 'editor.previewReady' : 'editor.previewPreparing')}</span></div></footer>
     </section>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { logoPlacement, logoSafeArea, moveLogo, type LogoSettings, type LogoSource } from '../logo';
+  import { changedLogoPosition, logoPlacement, logoSafeArea, moveLogo, type LogoSettings, type LogoSource } from '../logo';
   import { t } from '../i18n';
 
   export let sourceUrl: string;
@@ -92,7 +92,8 @@
       },
       { x: SNAP_DISTANCE_PX / bounds.width, y: SNAP_DISTANCE_PX / bounds.height },
     );
-    onChange(settings);
+    const patch = changedLogoPosition(logo.settings, settings);
+    if (Object.keys(patch).length) onChange(patch);
   }
 
   function endDrag(event: PointerEvent) {

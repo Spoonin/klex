@@ -138,8 +138,15 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .logo-stage img.dragging { cursor: grabbing; }
 .logo-inspector { padding: 20px; display: grid; gap: 16px; }
 .logo-inspector .section-heading h3 { font-size: 1.08rem; }
+.logo-override-summary { padding: 10px 11px; border: 1px solid #30343d; border-radius: 11px; display: flex; align-items: center; gap: 12px; background: #111419; }
+.logo-override-summary.active { border-color: rgb(185 168 255 / .42); background: rgb(185 168 255 / .055); }
+.logo-override-summary > span { min-width: 0; margin-right: auto; display: grid; gap: 3px; }
+.logo-override-summary b { color: #e4e1f5; font-size: .65rem; }
+.logo-override-summary small { color: #777c87; font-size: .52rem; line-height: 1.4; }
+.logo-override-summary button { flex: 0 0 auto; padding: 6px 8px; border: 1px solid #464050; border-radius: 8px; color: #d4caff; background: #1b1822; font-size: .56rem; font-weight: 800; cursor: pointer; }
 .logo-anchor-field { min-width: 0; margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: 94px 1fr; align-items: center; gap: 14px; }
-.logo-anchor-field legend { margin-bottom: 8px; color: #9297a2; font-size: .65rem; font-weight: 700; }
+.logo-anchor-field legend { width: 100%; margin-bottom: 8px; color: #9297a2; font-size: .65rem; font-weight: 700; }
+.logo-anchor-field legend > span { display: inline-block; margin-right: 6px; }
 .logo-anchor-field output { min-width: 0; color: #e3e5ea; font-size: .71rem; font-weight: 800; }
 .logo-anchor-grid { width: 94px; aspect-ratio: 1; padding: 7px; border: 1px solid #323640; border-radius: 13px; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); background: #101318; }
 .logo-anchor-grid button { width: 25px; height: 25px; padding: 0; border: 0; border-radius: 8px; display: grid; place-items: center; background: transparent; cursor: pointer; }
@@ -155,6 +162,13 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .logo-range-field { display: grid; gap: 7px; }
 .logo-range-field > span { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #9297a2; font-size: .65rem; }
 .logo-range-field > span b { font-weight: 700; }
+.logo-control-label { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.logo-property-status { display: inline-flex; align-items: center; gap: 4px; vertical-align: middle; }
+.logo-property-status em { padding: 3px 5px; border-radius: 99px; font-size: .46rem; font-style: normal; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.logo-property-status .overridden { color: #d9d0ff; background: rgb(185 168 255 / .13); }
+.logo-property-status .fitted { color: #e6d293; background: rgb(240 196 93 / .12); }
+.logo-property-status button { width: 20px; height: 20px; padding: 0; border: 1px solid #3c414b; border-radius: 6px; color: #b7bbc4; background: #171a20; font-size: .66rem; line-height: 1; cursor: pointer; }
+.logo-property-status button:hover { border-color: var(--accent); color: var(--accent); }
 .logo-range-field > input[type='range'] { height: 16px; }
 .logo-range-field > small { color: #676c77; font-size: .55rem; font-variant-numeric: tabular-nums; }
 .logo-number { min-width: 72px; height: 30px; border: 1px solid #343842; border-radius: 9px; display: flex; align-items: center; color: #e8e9ed; background: #101318; }

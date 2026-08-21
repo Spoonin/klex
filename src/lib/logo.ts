@@ -15,6 +15,8 @@ export type LogoSettings = {
   offsetY: number;
 };
 
+export type LogoPositionSettings = Pick<LogoSettings, 'anchor' | 'offsetX' | 'offsetY'>;
+
 export type LogoSource = {
   file: File;
   width: number;
@@ -200,6 +202,18 @@ export function moveLogo(
   );
 
   return logoSettingsAtPosition(image, frame, settings, { left, top });
+}
+
+/** Returns only position properties that a drag actually changed. */
+export function changedLogoPosition(
+  previous: LogoPositionSettings,
+  next: LogoPositionSettings,
+): Partial<LogoPositionSettings> {
+  const patch: Partial<LogoPositionSettings> = {};
+  if (next.anchor !== previous.anchor) patch.anchor = next.anchor;
+  if (next.offsetX !== previous.offsetX) patch.offsetX = next.offsetX;
+  if (next.offsetY !== previous.offsetY) patch.offsetY = next.offsetY;
+  return patch;
 }
 
 /** Re-expresses an unchanged visual position using its nearest Logo Anchor. */

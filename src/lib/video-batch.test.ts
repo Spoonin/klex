@@ -3,13 +3,19 @@ import {
   appendVideoBatch,
   hasLogoBatchDefault,
   initialLogoBatchEditorTarget,
+  fittedLogoSettingKeys,
   rejectVideoBatchItem,
   removeVideoBatchItem,
+  resetVideoLogoOverride,
+  resetVideoLogoOverrideProperty,
+  resolveVideoLogoSettings,
   seekVideoBatchItem,
   supportedVideoBatchItems,
   validateVideoBatchItem,
   videoBatchPlayhead,
+  updateVideoLogoOverride,
 } from './video-batch';
+import { DEFAULT_LOGO_SETTINGS } from './logo';
 
 const metadata = { duration: 12, width: 1920, height: 1080, unsupportedAudio: false };
 
@@ -89,5 +95,44 @@ describe('video Batch', () => {
 
     expect(playheads).toEqual({ one: 4, two: 0 });
     expect(videoBatchPlayhead({ one: -2 }, 'one', 10)).toBe(0);
+  });
+
+  it('inherits every Logo property except sparse Video Overrides', () => {
+    const batchDefault = { ...DEFAULT_LOGO_SETTINGS, opacity: 0.8 };
+    const overrides = updateVideoLogoOverride({}, 'one', batchDefault, { opacity: 0.45 });
+
+    expect(overrides).toEqual({ one: { opacity: 0.45 } });
+    expect(resolveVideoLogoSettings({ ...batchDefault, size: 0.3 }, overrides.one)).toEqual({
+      ...batchDefault,
+      size: 0.3,
+      opacity: 0.45,
+    });
+  });
+
+  it('updates only edited Video Override properties and resumes inheritance at the Batch Default', () => {
+    const batchDefault = { ...DEFAULT_LOGO_SETTINGS };
+    let overrides = updateVideoLogoOverride({}, 'one', batchDefault, { size: 0.3 });
+    overrides = updateVideoLogoOverride(overrides, 'one', batchDefault, { opacity: 0.7 });
+    overrides = updateVideoLogoOverride(overrides, 'one', batchDefault, { size: batchDefault.size });
+
+    expect(overrides).toEqual({ one: { opacity: 0.7 } });
+  });
+
+  it('resets one property or the complete Video Override without touching another video', () => {
+    const overrides = {
+      one: { size: 0.3, opacity: 0.7 },
+      two: { safeMargin: 0.1 },
+    } as const;
+
+    const onePropertyReset = resetVideoLogoOverrideProperty(overrides, 'one', 'size');
+    expect(onePropertyReset).toEqual({ one: { opacity: 0.7 }, two: { safeMargin: 0.1 } });
+    expect(resetVideoLogoOverride(onePropertyReset, 'one')).toEqual({ two: { safeMargin: 0.1 } });
+  });
+
+  it('reports Safe Margin fitting separately from persisted Video Overrides', () => {
+    const raw = { ...DEFAULT_LOGO_SETTINGS, size: 0.9, offsetX: 0.4 };
+    const fitted = { ...raw, size: 0.5, offsetX: 0.05 };
+
+    expect(fittedLogoSettingKeys(raw, fitted)).toEqual(['offsetX', 'size']);
   });
 });

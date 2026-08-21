@@ -7,6 +7,7 @@ import {
   MIN_LOGO_OPACITY,
   MIN_LOGO_SIZE,
   canonicalLogoOffset,
+  changedLogoPosition,
   fitLogoSettings,
   isLogoVideoDurationSupported,
   logoOffsetBounds,
@@ -223,6 +224,13 @@ describe('Logo', () => {
 
     expect(anchored.anchor).toBe('bottom-right');
     expect(logoPlacement(image, frame, anchored)).toMatchObject(position);
+  });
+
+  it('creates a drag patch from changed position properties only', () => {
+    const previous = { anchor: 'bottom-right' as const, offsetX: -0.05, offsetY: -0.05 };
+
+    expect(changedLogoPosition(previous, { ...previous, offsetX: -0.2 })).toEqual({ offsetX: -0.2 });
+    expect(changedLogoPosition(previous, previous)).toEqual({});
   });
 
   it('accepts a full video only within the Logo duration limit', () => {
